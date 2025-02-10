@@ -1,0 +1,94 @@
+version: "3.8"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    tty: true
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - 11434:11434
+      - 53:53
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=http://localhost,https://localhost,http://127.0.0.1,https://127.0.0.1,http://0.0.0.0,https://0.0.0.0
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "16G"
+        reservations:
+          cpus: "0.5"
+          memory: "8G"
+    labels:
+      deunhealth.restart.on.unhealthy: "true"
+    restart: unless-stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    volumes:
+      - open-webui:/app/backend/data
+    ports:
+      - 3000:8085
+    environment:
+      - PORT=8085
+      - OLLAMA_API_BASE_URL=http://192.168.100.8:11434/api
+      - WEBUI_AUTH=false
+      - WEBUI_NAME=Open WebUI
+    deploy:
+      placement:
+          constraints:
+            - node.hostname == ${NODE_HOSTNAME:-}
+    labels:
+      deunhealth.restart.on.unhealthy: "true"
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  watchtower:
+    image: containrrr/watchtower
+    hostname: watchtower
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_STOPPED=false
+      - WATCHTOWER_TIMEOUT=30s
+      - WATCHTOWER_SCHEDULE=0 * * * * *
+      - WATCHTOWER_HTTP_API_METRICS=true
+      - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_HTTP_API_TOKEN:-}
+    deploy:
+      placement:
+          constraints:
+            - node.hostname == ${NODE_HOSTNAME:-}
+    labels:
+      deunhealth.restart.on.unhealthy: "true"
+
+  deunhealth:
+    image: qmcgaw/deunhealth
+    container_name: deunhealth
+    hostname: deunhealth
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - 9999:9999
+    environment:
+      - LOG_LEVEL=info
+      - HEALTH_SERVER_ADDRESS=127.0.0.1:9999
+      - TZ=Asia/Ho_Chi_Minh
+    deploy:
+      placement:
+          constraints:
+            - node.hostname == ${NODE_HOSTNAME:-}
+    restart: unless-stopped
+    network_mode: "none"
+
+volumes:
+  ollama: {}
+  open-webui: {}
