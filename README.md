@@ -1,0 +1,2 @@
+# Ollama-Stack
+ Ollama Stack
