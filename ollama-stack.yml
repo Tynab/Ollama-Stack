@@ -11,15 +11,16 @@ services:
       - 11434:11434
       - 53:53
     environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_ORIGINS=http://localhost,https://localhost,http://127.0.0.1,https://127.0.0.1,http://0.0.0.0,https://0.0.0.0
+      OLLAMA_HOST: 0.0.0.0
+      OLLAMA_ORIGINS: "http://localhost,https://localhost,http://127.0.0.1,https://127.0.0.1,http://0.0.0.0,https://0.0.0.0"
     deploy:
       placement:
         constraints:
           - node.labels.nvidia-gpu == 1
+      restart_policy:
+        condition: any
     labels:
       deunhealth.restart.on.unhealthy: "true"
-    restart: unless-stopped
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
@@ -29,21 +30,22 @@ services:
     ports:
       - 8085:8085
     environment:
-      - PORT=8085
-      - OLLAMA_API_BASE_URL=http://192.168.100.8:11434/api
-      - WEBUI_AUTH=false
-      - WEBUI_NAME=Open WebUI
+      PORT: 8085
+      OLLAMA_API_BASE_URL: "http://192.168.100.8:11434/api"
+      WEBUI_AUTH: "false"
+      WEBUI_NAME: "Open WebUI"
     deploy:
       placement:
         constraints:
           - node.hostname == ${NODE_HOSTNAME:-}
+      restart_policy:
+        condition: any
     labels:
       deunhealth.restart.on.unhealthy: "true"
     extra_hosts:
       - host.docker.internal:host-gateway
     depends_on:
       - ollama
-    restart: unless-stopped
 
   watchtower:
     image: containrrr/watchtower
@@ -52,16 +54,18 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - WATCHTOWER_CLEANUP=true
-      - WATCHTOWER_INCLUDE_STOPPED=false
-      - WATCHTOWER_TIMEOUT=30s
-      - WATCHTOWER_SCHEDULE=0 * * * * *
-      - WATCHTOWER_HTTP_API_METRICS=true
-      - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_HTTP_API_TOKEN:-}
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_INCLUDE_STOPPED: "false"
+      WATCHTOWER_TIMEOUT: "30s"
+      WATCHTOWER_SCHEDULE: "0 * * * * *"
+      WATCHTOWER_HTTP_API_METRICS: "true"
+      WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_HTTP_API_TOKEN:-}
     deploy:
       placement:
         constraints:
           - node.hostname == ${NODE_HOSTNAME:-}
+      restart_policy:
+        condition: any
     labels:
       deunhealth.restart.on.unhealthy: "true"
 
@@ -74,14 +78,15 @@ services:
     ports:
       - 9999:9999
     environment:
-      - LOG_LEVEL=info
-      - HEALTH_SERVER_ADDRESS=127.0.0.1:9999
-      - TZ=Asia/Ho_Chi_Minh
+      LOG_LEVEL: info
+      HEALTH_SERVER_ADDRESS: "127.0.0.1:9999"
+      TZ: "Asia/Ho_Chi_Minh"
     deploy:
       placement:
         constraints:
           - node.hostname == ${NODE_HOSTNAME:-}
-    restart: unless-stopped
+      restart_policy:
+        condition: any
     network_mode: "none"
 
 volumes:
