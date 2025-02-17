@@ -16,7 +16,7 @@ services:
     deploy:
       placement:
         constraints:
-          - node.labels.nvidia-gpu == 1
+          - node.hostname == ndtan
       restart_policy:
         condition: any
     labels:
@@ -37,7 +37,7 @@ services:
     deploy:
       placement:
         constraints:
-          - node.hostname == ${NODE_HOSTNAME:-}
+          - node.hostname == tynab
       restart_policy:
         condition: any
     labels:
@@ -63,7 +63,7 @@ services:
     deploy:
       placement:
         constraints:
-          - node.hostname == ${NODE_HOSTNAME:-}
+          - node.hostname == yan
       restart_policy:
         condition: any
     labels:
@@ -84,7 +84,7 @@ services:
     deploy:
       placement:
         constraints:
-          - node.hostname == ${NODE_HOSTNAME:-}
+          - node.hostname == yan
       restart_policy:
         condition: any
     network_mode: "none"
