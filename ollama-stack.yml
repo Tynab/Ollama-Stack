@@ -13,6 +13,8 @@ services:
     environment:
       OLLAMA_HOST: 0.0.0.0
       OLLAMA_ORIGINS: "http://localhost,https://localhost,http://127.0.0.1,https://127.0.0.1,http://0.0.0.0,https://0.0.0.0"
+    networks:
+      - yan
     deploy:
       placement:
         constraints:
@@ -31,9 +33,11 @@ services:
       - 8085:8085
     environment:
       PORT: 8085
-      OLLAMA_API_BASE_URL: "http://192.168.100.8:11434/api"
+      OLLAMA_API_BASE_URL: "http://192.168.100.9:11434/api"
       WEBUI_AUTH: "false"
       WEBUI_NAME: "Open WebUI"
+    networks:
+      - yan
     deploy:
       placement:
         constraints:
@@ -59,6 +63,8 @@ services:
       WATCHTOWER_SCHEDULE: "0 * * * * *"
       WATCHTOWER_HTTP_API_METRICS: "true"
       WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_HTTP_API_TOKEN:-}
+    networks:
+      - yan
     deploy:
       placement:
         constraints:
@@ -79,6 +85,8 @@ services:
       LOG_LEVEL: info
       HEALTH_SERVER_ADDRESS: "127.0.0.1:9999"
       TZ: "Asia/Ho_Chi_Minh"
+    networks:
+      - yan
     deploy:
       placement:
         constraints:
@@ -90,3 +98,7 @@ services:
 volumes:
   ollama: {}
   open-webui: {}
+
+networks:
+  yan:
+    driver: overlay
