@@ -3,7 +3,7 @@ version: "3.8"
 services:
   ollama:
     image: ollama/ollama:latest
-    container_name: ollama
+    hostname: ollama
     tty: true
     volumes:
       - ollama:/root/.ollama
@@ -24,7 +24,7 @@ services:
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
-    container_name: open-webui
+    hostname: open-webui
     volumes:
       - open-webui:/app/backend/data
     ports:
@@ -50,7 +50,6 @@ services:
   watchtower:
     image: containrrr/watchtower
     hostname: watchtower
-    container_name: watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -71,7 +70,6 @@ services:
 
   deunhealth:
     image: qmcgaw/deunhealth
-    container_name: deunhealth
     hostname: deunhealth
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
