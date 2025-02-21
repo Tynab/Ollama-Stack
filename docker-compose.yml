@@ -82,8 +82,6 @@ services:
       LOG_LEVEL: "info"
       HEALTH_SERVER_ADDRESS: "127.0.0.1:9999"
       TZ: "Asia/Ho_Chi_Minh"
-    networks:
-      - yan
     network_mode: "none"
     restart: "unless-stopped"
 
