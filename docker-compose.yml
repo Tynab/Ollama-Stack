@@ -3,62 +3,58 @@ version: "3.8"
 services:
   ollama:
     image: ollama/ollama:latest
-    hostname: ollama
+    container_name: ollama
+    pull_policy: always
     tty: true
     volumes:
       - ollama:/root/.ollama
     ports:
-      - 11434:11434
+      - "11434:11434"
     environment:
-      OLLAMA_HOST: 0.0.0.0
+      OLLAMA_KEEP_ALIVE: "24h"
+      OLLAMA_HOST: "0.0.0.0"
       OLLAMA_ORIGINS: "http://localhost,https://localhost,http://127.0.0.1,https://127.0.0.1,http://0.0.0.0,https://0.0.0.0"
-    networks:
-      - yan
     deploy:
-      placement:
-        constraints:
-          - node.hostname == anndt
       resources:
         reservations:
-          generic_resources:
-            - discrete_resource_spec:
-                kind: "NVIDIA-GPU"
-                value: 1
-      restart_policy:
-        condition: any
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - yan
     labels:
       deunhealth.restart.on.unhealthy: "true"
+    restart: "unless-stopped"
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
-    hostname: open-webui
+    container_name: open-webui
     volumes:
       - open-webui:/app/backend/data
     ports:
-      - 8085:8085
+      - "8085:8085"
     environment:
-      PORT: 8085
+      PORT: "8085"
       OLLAMA_API_BASE_URL: "http://192.168.100.9:11434/api"
+      ENV: "production"
       WEBUI_AUTH: "false"
-      WEBUI_NAME: "Open WebUI"
+      WEBUI_NAME: "YAN AI"
+      WEBUI_URL: "http://localhost:8085"
+      WEBUI_SECRET_KEY: "yamiannephilim"
     networks:
       - yan
-    deploy:
-      placement:
-        constraints:
-          - node.hostname == tynab
-      restart_policy:
-        condition: any
-    labels:
-      deunhealth.restart.on.unhealthy: "true"
     extra_hosts:
-      - host.docker.internal:host-gateway
+      - "host.docker.internal:host-gateway"
     depends_on:
       - ollama
+    labels:
+      deunhealth.restart.on.unhealthy: "true"
+    restart: "unless-stopped"
 
   watchtower:
     image: containrrr/watchtower
-    hostname: watchtower
+    container_name: watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -70,35 +66,23 @@ services:
       WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_HTTP_API_TOKEN:-}
     networks:
       - yan
-    deploy:
-      placement:
-        constraints:
-          - node.hostname == yan
-      restart_policy:
-        condition: any
     labels:
       deunhealth.restart.on.unhealthy: "true"
+    restart: "unless-stopped"
 
   deunhealth:
     image: qmcgaw/deunhealth
-    hostname: deunhealth
+    container_name: deunhealth
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - 9999:9999
+      - "9999:9999"
     environment:
-      LOG_LEVEL: info
+      LOG_LEVEL: "info"
       HEALTH_SERVER_ADDRESS: "127.0.0.1:9999"
       TZ: "Asia/Ho_Chi_Minh"
-    networks:
-      - yan
-    deploy:
-      placement:
-        constraints:
-          - node.hostname == yan
-      restart_policy:
-        condition: any
     network_mode: "none"
+    restart: "unless-stopped"
 
 volumes:
   ollama: {}
@@ -106,4 +90,4 @@ volumes:
 
 networks:
   yan:
-    driver: overlay
+    driver: bridge
