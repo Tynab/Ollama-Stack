@@ -4,13 +4,17 @@ services:
     container_name: ollama
     pull_policy: always
     tty: true
+    ports:
+      - "11434:11434"
     volumes:
       - ollama:/root/.ollama
-    ports:
-      - 11434:11434
     environment:
-      OLLAMA_HOST: "0.0.0.0"
-      OLLAMA_ORIGINS: "http://localhost,https://localhost,http://127.0.0.1,https://127.0.0.1,http://0.0.0.0,https://0.0.0.0"
+      OLLAMA_HOST: ${OLLAMA_HOST}
+      OLLAMA_ORIGINS: ${OLLAMA_ORIGINS}
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE}
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH}
     deploy:
       resources:
         reservations:
@@ -20,30 +24,149 @@ services:
               capabilities: [gpu]
     networks:
       - yan
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    networks:
+      - yan
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME}/${NEO4J_PASSWORD}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - yan
+    restart: unless-stopped
+
+  rag-api:
+    build:
+      context: ./rag-api
+    image: ollama-stack_rag-api:latest
+    container_name: rag-api
     labels:
-      deunhealth.restart.on.unhealthy: true
+      - "com.centurylinklabs.watchtower.enable=false"
+      - "deunhealth.restart.unhealthy=true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    ports:
+      - "8090:8090"
+    environment:
+      LOG_LEVEL: ${RAG_LOG_LEVEL}
+      RAW_DATA_DIR: ${RAW_DATA_DIR}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      QDRANT_URL: ${QDRANT_URL}
+      COLLECTION_NAME: ${COLLECTION_NAME}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      CHAT_MODEL: ${CHAT_MODEL}
+      CHUNK_SIZE: ${CHUNK_SIZE}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP}
+      UPSERT_BATCH_SIZE: ${UPSERT_BATCH_SIZE}
+      RAG_TOP_K: ${RAG_TOP_K}
+      NEO4J_URI: ${NEO4J_URI}
+      NEO4J_USERNAME: ${NEO4J_USERNAME}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      NEO4J_DATABASE: ${NEO4J_DATABASE}
+      GRAPH_ENABLED: ${GRAPH_ENABLED}
+      GRAPH_ENTITY_EXTRACTION: ${GRAPH_ENTITY_EXTRACTION}
+    volumes:
+      - ./data/raw:/data/raw
+    networks:
+      - yan
+    depends_on:
+      - ollama
+      - qdrant
+      - neo4j
+    restart: unless-stopped
+
+  agent-api:
+    build:
+      context: ./agent-api
+    image: ollama-stack_agent-api:latest
+    container_name: agent-api
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+      - "deunhealth.restart.unhealthy=true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    ports:
+      - "8091:8091"
+    environment:
+      LOG_LEVEL: ${RAG_LOG_LEVEL}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      RAG_API_URL: ${RAG_API_URL}
+      RAG_TOP_K: ${RAG_TOP_K}
+      PM_MODEL: ${PM_MODEL}
+      BA_MODEL: ${BA_MODEL}
+      SA_MODEL: ${SA_MODEL}
+      FE_MODEL: ${FE_MODEL}
+      BE_MODEL: ${BE_MODEL}
+      QA_MODEL: ${QA_MODEL}
+      DEVOPS_MODEL: ${DEVOPS_MODEL}
+    networks:
+      - yan
+    depends_on:
+      - ollama
+      - qdrant
+      - rag-api
     restart: unless-stopped
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
+    ports:
+      - "${OPEN_WEBUI_PORT}:${OPEN_WEBUI_PORT}"
     volumes:
       - open-webui:/app/backend/data
-    ports:
-      - 8085:8085
+      - ./data/raw:/data/raw
     environment:
-      PORT: "8085"
-      OLLAMA_API_BASE_URL: "http://192.168.100.9:11434/api"
-      WEBUI_AUTH: "false"
-      WEBUI_NAME: "YAN AI"
+      PORT: ${OPEN_WEBUI_PORT}
+      WEBUI_AUTH: ${WEBUI_AUTH}
+      WEBUI_NAME: ${WEBUI_NAME}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      VECTOR_DB: ${VECTOR_DB}
+      QDRANT_URI: ${QDRANT_URL}
+      QDRANT_PREFER_GRPC: ${QDRANT_PREFER_GRPC}
+      ENABLE_QDRANT_MULTITENANCY_MODE: ${ENABLE_QDRANT_MULTITENANCY_MODE}
+      QDRANT_COLLECTION_PREFIX: ${QDRANT_COLLECTION_PREFIX}
+      RAG_EMBEDDING_ENGINE: ${RAG_EMBEDDING_ENGINE}
+      RAG_OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      RAG_EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      RAG_TOP_K: ${RAG_TOP_K}
+      USER_AGENT: "YAN-AI/1.0"
     networks:
       - yan
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       - ollama
-    labels:
-      deunhealth.restart.on.unhealthy: true
+      - qdrant
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   watchtower:
@@ -52,16 +175,15 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_INCLUDE_STOPPED: "false"
-      WATCHTOWER_TIMEOUT: "30s"
-      WATCHTOWER_SCHEDULE: "0 * * * * *"
-      WATCHTOWER_HTTP_API_METRICS: "true"
-      WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_HTTP_API_TOKEN:-}
+      DOCKER_API_VERSION: "1.41"
+      WATCHTOWER_CLEANUP: ${WATCHTOWER_CLEANUP}
+      WATCHTOWER_INCLUDE_STOPPED: ${WATCHTOWER_INCLUDE_STOPPED}
+      WATCHTOWER_TIMEOUT: ${WATCHTOWER_TIMEOUT}
+      WATCHTOWER_SCHEDULE: ${WATCHTOWER_SCHEDULE}
+      WATCHTOWER_HTTP_API_METRICS: ${WATCHTOWER_HTTP_API_METRICS}
+      WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_HTTP_API_TOKEN}
     networks:
       - yan
-    labels:
-      deunhealth.restart.on.unhealthy: true
     restart: unless-stopped
 
   deunhealth:
@@ -70,17 +192,20 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - 9999:9999
+      - "9999:9999"
     environment:
-      LOG_LEVEL: "info"
-      HEALTH_SERVER_ADDRESS: "127.0.0.1:9999"
-      TZ: "Asia/Ho_Chi_Minh"
+      LOG_LEVEL: ${DEUNHEALTH_LOG_LEVEL}
+      HEALTH_SERVER_ADDRESS: ${HEALTH_SERVER_ADDRESS}
+      TZ: ${TZ}
     network_mode: none
     restart: unless-stopped
 
 volumes:
-  ollama: {}
-  open-webui: {}
+  ollama:
+  qdrant_storage:
+  neo4j_data:
+  neo4j_logs:
+  open-webui:
 
 networks:
   yan:
