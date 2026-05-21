@@ -1,0 +1,336 @@
+﻿import logging
+import os
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from langchain_ollama import ChatOllama
+from pydantic import BaseModel, Field
+from qdrant_client import QdrantClient
+
+from ingest import GRAPH_ENABLED, RAW_DATA_DIR, get_collection_name, get_embeddings, get_projects, ingest
+
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if value is None:
+        raise RuntimeError(
+            f"Required environment variable '{name}' is not set")
+    return value
+
+
+LOG_LEVEL = _require_env("LOG_LEVEL")
+
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+logger = logging.getLogger("rag-api")
+
+# ── Module Graph (tùy chọn — giảm cấp nhẹ nhàng nếu Neo4j không khả dụng) ────────
+_graph_module = None
+if GRAPH_ENABLED:
+    try:
+        import graph as _graph_module  # type: ignore[import-not-found]
+    except Exception as _graph_import_err:
+        logger.warning("Graph module failed to load: %s", _graph_import_err)
+
+OLLAMA_BASE_URL = _require_env("OLLAMA_BASE_URL")
+QDRANT_URL = _require_env("QDRANT_URL")
+COLLECTION_NAME = _require_env("COLLECTION_NAME")
+EMBEDDING_MODEL = _require_env("EMBEDDING_MODEL")
+CHAT_MODEL = _require_env("CHAT_MODEL")
+RAG_TOP_K = int(_require_env("RAG_TOP_K"))
+
+app = FastAPI(title="YAN Local RAG API", version="1.0.0")
+
+
+class AskRequest(BaseModel):
+    question: str = Field(..., min_length=1)
+    project: str | None = None
+    top_k: int | None = Field(None, ge=1, le=20)
+
+
+class IngestRequest(BaseModel):
+    project: str | None = None
+    reset: bool = False
+
+
+class SourceItem(BaseModel):
+    score: float
+    project: str | None = None
+    source_file: str | None = None
+    source_path: str | None = None
+    relative_path: str | None = None
+    file_type: str | None = None
+    chunk_index: int | None = None
+    preview: str
+
+
+class AskResponse(BaseModel):
+    answer: str
+    sources: list[SourceItem]
+
+
+_qdrant_client: QdrantClient | None = None
+_llm: ChatOllama | None = None
+
+
+def get_qdrant_client() -> QdrantClient:
+    global _qdrant_client
+    if _qdrant_client is None:
+        _qdrant_client = QdrantClient(url=QDRANT_URL)
+    return _qdrant_client
+
+
+def get_chat_model() -> ChatOllama:
+    global _llm
+    if _llm is None:
+        _llm = ChatOllama(model=CHAT_MODEL,
+                          base_url=OLLAMA_BASE_URL, temperature=0.1)
+    return _llm
+
+
+@app.get("/health")
+def health() -> dict[str, Any]:
+    graph_info: dict[str, Any] = {"enabled": GRAPH_ENABLED}
+    if GRAPH_ENABLED and _graph_module is not None:
+        graph_info["neo4j_uri"] = _graph_module.NEO4J_URI
+        graph_info["entity_extraction"] = _graph_module.GRAPH_ENTITY_EXTRACTION
+        graph_info["neo4j_connected"] = _graph_module.ping()
+    return {
+        "status": "ok",
+        "ollama_base_url": OLLAMA_BASE_URL,
+        "qdrant_url": QDRANT_URL,
+        "collection_prefix": COLLECTION_NAME,
+        "embedding_model": EMBEDDING_MODEL,
+        "chat_model": CHAT_MODEL,
+        "rag_top_k": RAG_TOP_K,
+        "graph": graph_info,
+    }
+
+
+@app.post("/ingest")
+def ingest_endpoint(req: IngestRequest = IngestRequest()) -> dict[str, Any]:
+    try:
+        return ingest(project=req.project, reset=req.reset)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Ingest failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/reset-ingest")
+def reset_ingest_endpoint(req: IngestRequest = IngestRequest()) -> dict[str, Any]:
+    try:
+        return ingest(project=req.project, reset=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Reset ingest failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/projects")
+def list_projects() -> dict[str, Any]:
+    client = get_qdrant_client()
+    projects = get_projects()
+    result: dict[str, Any] = {}
+    for project in projects:
+        coll = get_collection_name(project)
+        exists = client.collection_exists(coll)
+        result[project] = {
+            "collection": coll,
+            "indexed": exists,
+            "points_count": client.count(collection_name=coll, exact=True).count if exists else None,
+        }
+    return {"raw_data_dir": RAW_DATA_DIR, "projects": result}
+
+
+@app.post("/ask", response_model=AskResponse)
+def ask(req: AskRequest) -> AskResponse:
+    try:
+        top_k = req.top_k or RAG_TOP_K
+        logger.info("Ask started. project=%s top_k=%s question=%s",
+                    req.project, top_k, req.question)
+
+        client = get_qdrant_client()
+
+        if req.project is not None:
+            collections_to_search = [
+                (req.project, get_collection_name(req.project))]
+            if not client.collection_exists(collections_to_search[0][1]):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Project '{req.project}' chưa được ingest. Chạy POST /ingest trước.",
+                )
+        else:
+            projects = get_projects()
+            collections_to_search = [
+                (p, get_collection_name(p))
+                for p in projects
+                if client.collection_exists(get_collection_name(p))
+            ]
+            if not collections_to_search:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Chưa có project nào được index. Chạy POST /ingest trước.",
+                )
+
+        embeddings = get_embeddings()
+        query_vector = embeddings.embed_query(req.question)
+
+        all_hits = []
+        for _proj, coll_name in collections_to_search:
+            result = client.query_points(
+                collection_name=coll_name,
+                query=query_vector,
+                limit=top_k,
+                with_payload=True,
+            )
+            all_hits.extend(result.points)
+
+        all_hits.sort(key=lambda h: h.score, reverse=True)
+        hits = all_hits[:top_k]
+
+        # ── Bổ sung Graph qua co-occurrence thực thể Neo4j ────────────────────────────────
+        graph_extra: list[dict] = []
+        if GRAPH_ENABLED and _graph_module is not None:
+            try:
+                qdrant_ids = [str(h.id) for h in hits]
+                graph_extra = _graph_module.get_graph_enrichment(
+                    qdrant_ids, limit=top_k)
+                if graph_extra:
+                    logger.info(
+                        "Graph enrichment: %d extra chunks via entity co-occurrence",
+                        len(graph_extra),
+                    )
+            except Exception as exc:
+                logger.warning("Graph enrichment skipped: %s", exc)
+
+        logger.info(
+            "Retrieved %s hits from %s collection(s)", len(
+                hits), len(collections_to_search)
+        )
+
+        if not hits:
+            return AskResponse(
+                answer="Không tìm thấy context phù hợp trong vector database.",
+                sources=[],
+            )
+
+        context_blocks: list[str] = []
+        sources: list[SourceItem] = []
+
+        for idx, hit in enumerate(hits, start=1):
+            payload = hit.payload or {}
+            page_content = str(payload.get("page_content", ""))
+            project_name = str(payload.get("project", "unknown"))
+
+            context_blocks.append(
+                "\n".join(
+                    [
+                        f"[SOURCE {idx}]",
+                        f"project: {project_name}",
+                        f"file: {payload.get('source_file')}",
+                        f"path: {payload.get('relative_path') or payload.get('source_path')}",
+                        f"chunk_index: {payload.get('chunk_index')}",
+                        "content:",
+                        page_content,
+                    ]
+                )
+            )
+
+            sources.append(
+                SourceItem(
+                    score=float(hit.score),
+                    project=project_name,
+                    source_file=payload.get("source_file"),
+                    source_path=payload.get("source_path"),
+                    relative_path=payload.get("relative_path"),
+                    file_type=payload.get("file_type"),
+                    chunk_index=payload.get("chunk_index"),
+                    preview=page_content[:500],
+                )
+            )
+
+        context = "\n\n---\n\n".join(context_blocks)
+
+        # Thêm context từ graph traversal (nếu có) sau context tìm kiếm vector
+        if graph_extra:
+            graph_blocks = []
+            for g in graph_extra:
+                idx = len(context_blocks) + len(graph_blocks) + 1
+                graph_blocks.append(
+                    "\n".join([
+                        f"[GRAPH CONTEXT {idx}]",
+                        f"project: {g.get('project', 'unknown')}",
+                        f"file: {g.get('source_file')}",
+                        f"related entities: {', '.join(g.get('matched_entities', []))}",
+                        "content:",
+                        str(g.get("text", "")),
+                    ])
+                )
+            context = context + "\n\n---\n\n" + \
+                "\n\n---\n\n".join(graph_blocks)
+
+        prompt = f"""
+Bạn là local RAG assistant.
+
+Quy tắc:
+- Chỉ trả lời dựa trên CONTEXT.
+- Nếu CONTEXT không đủ dữ liệu, hãy nói rõ là không đủ dữ liệu.
+- Trả lời bằng tiếng Việt.
+- Cuối câu trả lời, liệt kê nguồn ngắn gọn theo tên file và project nếu có.
+
+QUESTION:
+{req.question}
+
+CONTEXT:
+{context}
+""".strip()
+
+        logger.info("Calling Ollama chat model: %s", CHAT_MODEL)
+        llm = get_chat_model()
+        response = llm.invoke(prompt)
+
+        answer = str(response.content)
+
+        logger.info("Ask completed")
+
+        return AskResponse(
+            answer=answer,
+            sources=sources,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Ask failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ── Endpoint Graph ────────────────────────────────────────────────────────
+
+@app.get("/graph/status")
+def graph_status_endpoint() -> dict[str, Any]:
+    """Trạng thái kết nối Neo4j và thống kê đồ thị."""
+    if not GRAPH_ENABLED:
+        return {"enabled": False, "message": "Set GRAPH_ENABLED=true in .env to enable Neo4j"}
+    if _graph_module is None:
+        return {"enabled": True, "connected": False, "message": "Graph module failed to load at startup"}
+    connected = _graph_module.ping()
+    stats = _graph_module.get_graph_stats() if connected else {}
+    return {
+        "enabled": True,
+        "connected": connected,
+        "neo4j_uri": _graph_module.NEO4J_URI,
+        "entity_extraction": _graph_module.GRAPH_ENTITY_EXTRACTION,
+        "stats": stats,
+    }
+
+
+@app.get("/graph/projects/{project}/entities")
+def graph_entities(project: str) -> dict[str, Any]:
+    """Liệt kê tất cả thực thể đã trích xuất cho một project, sắp xếp theo số lần đề cập."""
+    if not GRAPH_ENABLED or _graph_module is None:
+        raise HTTPException(
+            status_code=503, detail="Graph integration is not enabled")
+    entities = _graph_module.get_entities_for_project(project)
+    return {"project": project, "total": len(entities), "entities": entities}
