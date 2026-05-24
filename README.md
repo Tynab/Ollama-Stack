@@ -161,7 +161,7 @@ Ollama-Stack/
 ├── docker-compose.yml
 ├── data/
 │   ├── raw/                      # Tài liệu RAG — tổ chức theo project (và module tùy chọn)
-│   │   ├── yanlib/              # → collection: yan_raw_docs__yanlib
+│   │   ├── yanlib/               # → collection: yan_raw_docs__yanlib
 │   │   │   ├── auth/             # → module=auth   (subdirectory = module)
 │   │   │   ├── billing/          # → module=billing
 │   │   │   ├── marketplace/      # → module=marketplace
@@ -280,7 +280,7 @@ docker exec ollama ollama list
 Đặt file vào subfolder theo project (và tùy chọn theo module):
 
 ```
-data/raw/yanlib/auth/auth-prd.md           # module=auth
+data/raw/yanlib/auth/auth-prd.md          # module=auth
 data/raw/yanlib/billing/billing-plans.md  # module=billing
 data/raw/yanlib/marketplace-schema.md     # module=yanlib (flat)
 ```
