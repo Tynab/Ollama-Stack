@@ -78,7 +78,74 @@ Mỗi bước nhận truncated output của các bước phụ thuộc và tùy 
 - Mỗi `/ask` trước tiên lấy top-k chunks từ Qdrant, sau đó Neo4j tìm thêm chunks liên quan qua entity co-occurrence.
 - Nếu `GRAPH_ENTITY_EXTRACTION=true`, khi ingest LLM sẽ extract entities từ mỗi document rồi lưu vào Neo4j.
 
-## Prerequisites
+---
+
+## Tính năng mới
+
+### Module-scoped RAG
+
+Khi tổ chức tài liệu theo thư mục con `data/raw/{project}/{module}/`, mỗi chunk sẽ được gán `module` tự động:
+
+```
+data/raw/yanlib/auth/auth-prd.md     → module=auth
+data/raw/yanlib/billing/schema.md   → module=billing
+data/raw/yanlib/spec.md             → module=yanlib (flat file)
+```
+
+Sử dụng filter `module` trong `/ask` để giới hạn search:
+
+```bash
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "JWT refresh token flow?", "project": "yanlib", "module": "auth"}' | jq
+```
+
+Mỗi `SourceItem` trong response chứa thêm: `module`, `doc_type` (prd/schema/api/architecture/…), `chunk_type` (paragraph/table/code).
+
+### Role-specific RAG queries (rag_query_hint)
+
+Mỗi SDLC agent có `rag_query_hint` riêng để xây dựng câu truy vấn RAG chính xác hơn thay vì dùng nguyên `user_input`. Ví dụ:
+- **PM**: tìm *"mục tiêu dự án, phạm vi, stakeholder, ràng buộc, rủi ro, timeline, OKR"*
+- **BA**: tìm *"yêu cầu chức năng, user story, acceptance criteria, quy tắc nghiệp vụ"*
+- **SA**: tìm *"kiến trúc hệ thống, API contracts, data model, tích hợp, pattern, bảo mật"*
+
+Điều này cải thiện độ chính xác retrieval cho từng chân SDLC mà không cần sửa `user_input`.
+
+### Episodic Memory Logging
+
+Mỗi lần workflow hoàn thành, agent-api tự động ghi log JSONL vào:
+
+```
+data/memory/episodic/workflow_runs.jsonl
+```
+
+Mỗi dòng là một JSON object:
+
+```json
+{
+  "workflow_id": "a1b2c3d4-...",
+  "project": "yanlib",
+  "user_input": "Xây dựng checkout flow...",
+  "completed_steps": ["pm","ba","sa","qa_shiftleft","devops_env","be","fe","qa_exec","devops_release","pm_closure"],
+  "steps_count": 10,
+  "status": "completed",
+  "error": null,
+  "duration_seconds": 842.5,
+  "timestamp": "2025-01-01T12:00:00+00:00"
+}
+```
+
+File này có thể dùng làm dataset để fine-tune, phân tích hiệu suất, hoặc feed vào các workflow tiếp theo làm context lịch sử.
+
+### Input Sanitization
+
+`user_input` ở `/agent/{role}` và `/workflow/run` được tự động:
+- Loại bỏ ký tự điều khiển (trừ newline/tab)
+- Cắt ngắn tại 10 000 ký tự nếu vượt quá
+
+Giá trị sau sanitize được lưu vào `WorkflowRecord` và log.
+
+
 
 - Docker Desktop (Windows) hoặc Docker Engine + Compose plugin (Linux/Mac)
 - RAM ≥ 32 GB (cho SDLC agents với model 35B; ≥ 16 GB cho RAG only)
@@ -93,13 +160,16 @@ Ollama-Stack/
 ├── .env                          # Single source of truth cho tất cả config
 ├── docker-compose.yml
 ├── data/
-│   └── raw/                      # Tài liệu RAG — tổ chức theo project
-│       ├── auth/                 # → collection: yan_raw_docs__auth
-│       ├── billing/              # → collection: yan_raw_docs__billing
-│       ├── marketplace/          # → collection: yan_raw_docs__marketplace
-│       ├── platform/             # → collection: yan_raw_docs__platform
-│       ├── sa-portal/            # → collection: yan_raw_docs__sa-portal
-│       └── udi/                  # → collection: yan_raw_docs__udi
+│   ├── raw/                      # Tài liệu RAG — tổ chức theo project (và module tùy chọn)
+│   │   ├── yanlib/              # → collection: yan_raw_docs__yanlib
+│   │   │   ├── auth/             # → module=auth   (subdirectory = module)
+│   │   │   ├── billing/          # → module=billing
+│   │   │   ├── marketplace/      # → module=marketplace
+│   │   │   └── *.md              # → module=yanlib (flat file = dùng project làm module)
+│   │   └── <project>/            # Thêm bất kỳ project nào
+│   └── memory/
+│       └── episodic/
+│           └── workflow_runs.jsonl  # Log tự động mỗi workflow run
 ├── rag-api/
 │   ├── app.py                    # FastAPI endpoints (ingest, ask, projects, graph)
 │   ├── ingest.py                 # Document ingestion: chunk → embed → Qdrant upsert
@@ -108,7 +178,7 @@ Ollama-Stack/
 │   └── Dockerfile
 ├── agent-api/
 │   ├── app.py                    # FastAPI SDLC Agent Orchestrator API
-│   ├── agents.py                 # 10 agent configs (model, system prompt, deps)
+│   ├── agents.py                 # 10 agent configs (model, system prompt, deps, rag_query_hint)
 │   ├── workflow.py               # LangGraph StateGraph — 10-step SDLC workflow
 │   ├── requirements.txt
 │   └── Dockerfile
@@ -118,6 +188,12 @@ Ollama-Stack/
 ```
 
 Mỗi subfolder trong `data/raw/` là một **project** độc lập → Qdrant collection riêng → tránh noise khi query.
+
+Cấu trúc thư mục con trong project:
+- `data/raw/{project}/{module}/file.md` → chunk có `module=<tên thư mục>`
+- `data/raw/{project}/file.md` (flat) → chunk có `module=<project>`
+
+Nhờ đó `/ask` có thể lọc kết quả theo module để tăng độ chính xác:
 
 **File formats được hỗ trợ:** `.md`, `.txt`, `.pdf`, `.docx`, `.csv`, `.json`, `.jsonl`, `.yaml`, `.yml`, `.xml`, `.html`, `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java`, `.cs`, `.sh`, `.sql`, `.log`
 
@@ -149,13 +225,17 @@ DEVOPS_MODEL=qwen3-coder-next
 CHAT_MODEL=qwen2.5-coder:14b    # model dùng cho /ask response
 RAG_TOP_K=4
 
+# ─── Agent API ───────────────────────────────────────────────────────────────
+MEMORY_DIR=/data/memory          # thư mục ghi episodic log (workflow_runs.jsonl)
+
 # ─── Bảo mật — bắt buộc đổi trước khi deploy ─────────────────────────────
 NEO4J_PASSWORD=changeme_in_production
 WATCHTOWER_HTTP_API_TOKEN=...
 
 # ─── Ollama performance ───────────────────────────────────────────────────────
 OLLAMA_MAX_LOADED_MODELS=4      # số model giữ trong VRAM cùng lúc
-OLLAMA_CONTEXT_LENGTH=32768     # phải khớp với num_ctx trong agent-api/workflow.py
+OLLAMA_CONTEXT_LENGTH=32768     # context window (tokens) cho mỗi LLM call trong agent-api
+RAG_TIMEOUT=120                  # timeout (giây) cho mỗi lần gọi RAG /ask trong workflow
 ```
 
 ### 2. Khởi động stack
@@ -195,14 +275,21 @@ Kiểm tra models đã có:
 docker exec ollama ollama list
 ```
 
-### 4. Tổ chức tài liệu
+### Tổ chức tài liệu
 
-Đặt file vào subfolder theo project:
+Đặt file vào subfolder theo project (và tùy chọn theo module):
 
 ```
-data/raw/auth/auth-prd.md
-data/raw/marketplace/marketplace-schema.md
-data/raw/billing/billing-plans.md
+data/raw/yanlib/auth/auth-prd.md           # module=auth
+data/raw/yanlib/billing/billing-plans.md  # module=billing
+data/raw/yanlib/marketplace-schema.md     # module=yanlib (flat)
+```
+
+Hoặc để flat nếu không cần lọc theo module:
+
+```
+data/raw/myproject/spec-v1.md
+data/raw/myproject/architecture.md
 ```
 
 ### 5. Ingest tài liệu vào Qdrant
@@ -423,6 +510,17 @@ curl -s -X POST http://localhost:8090/reset-ingest \
 
 ### Ask
 
+**Request body:**
+
+| Field      | Type            | Mô tả                                                              |
+|------------|-----------------|--------------------------------------------------------------------|
+| `question` | `string` (bắt buộc) | Câu hỏi                                                       |
+| `project`  | `string\|null`  | Lọc theo project (null = search tất cả)                           |
+| `module`   | `string\|null`  | Lọc theo module trong project (null = search toàn project)        |
+| `top_k`    | `int\|null`     | Số kết quả (null = dùng `RAG_TOP_K` env, mặc định 4)              |
+
+**Response `sources[]` fields:** `score`, `project`, `module`, `doc_type`, `chunk_type`, `source_file`, `relative_path`, `file_type`, `chunk_index`, `preview`
+
 ```bash
 # Hỏi toàn bộ (search tất cả collections, merge kết quả)
 curl -s -X POST http://localhost:8090/ask \
@@ -432,12 +530,17 @@ curl -s -X POST http://localhost:8090/ask \
 # Hỏi trong project cụ thể
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"question": "Schema billing như thế nào?", "project": "billing"}' | jq
+  -d '{"question": "Schema billing như thế nào?", "project": "yanlib"}' | jq
+
+# Hỏi trong project + filter theo module (tăng độ chính xác)
+curl -s -X POST http://localhost:8090/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Auth flow hoạt động như thế nào?", "project": "yanlib", "module": "auth"}' | jq
 
 # Tuỳ chỉnh top_k
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
-  -d '{"question": "Marketplace pack architecture?", "project": "marketplace", "top_k": 8}' | jq
+  -d '{"question": "Marketplace pack architecture?", "project": "yanlib", "top_k": 8}' | jq
 
 # Chỉ lấy answer
 curl -s -X POST http://localhost:8090/ask \
@@ -551,6 +654,7 @@ Query trực tiếp knowledge base từ chat UI.
 | `timeout`         | `120`                    | Timeout giây                                     |
 | `top_k`           | `null`                   | Số kết quả RAG (null = dùng `RAG_TOP_K` của API) |
 | `default_project` | `null`                   | Project mặc định (null = search tất cả)          |
+| `default_module`  | `null`                   | Module mặc định để lọc chunk (null = toàn project) |
 
 **Ví dụ sử dụng trong chat:**
 ```
@@ -680,9 +784,12 @@ docker compose down -v
 | `rag-api` / `agent-api` crash khi start | Env var chưa set | `docker compose logs rag-api` hoặc `agent-api` |
 | `/ask` trả về 404 "chưa được ingest" | Chưa chạy `/ingest` | `POST /ingest {"project": "..."}` |
 | `/ingest` trả về `"status": "empty"` | Không có subfolder trong `data/raw/` | Tạo subfolder và đặt file vào đó |
+| `/ask` với `module` không trả kết quả | Module chưa tồn tại trong collection | Kiểm tra tên module = tên thư mục con trong project |
 | Embedding chậm / timeout | Model chưa được pull | `docker exec ollama ollama pull qwen3-embedding:8b` |
 | SDLC workflow `status=failed` | Xem field `error` | `curl .../workflow/{id} \| jq .error` |
-| SDLC step output bắt đầu bằng `[ERROR` | LLM timeout hoặc model chưa pull | Kiểm tra model đã pull, tăng timeout nếu cần |
+| SDLC step output bắt đầu bằng `[ERROR` | LLM timeout hoặc model chưa pull | Kiểm tra model đã pull, tăng `RAG_TIMEOUT` trong `.env` |
+| `user_input` bị cắt ngắn trong workflow | Input > 10 000 ký tự | Input được sanitize tự động; chia nhỏ nếu cần |
+| `workflow_runs.jsonl` không được tạo | `MEMORY_DIR` không mount | Kiểm tra volume `./data/memory:/data/memory` trong `docker-compose.yml` |
 | Open WebUI không gọi được rag-api | URL sai (dùng `localhost`) | Valve `rag_api_url` = `http://rag-api:8090` |
 | Open WebUI không gọi được agent-api | URL sai (dùng `localhost`) | Valve `agent_api_url` = `http://agent-api:8091` |
 | Qdrant collection không tồn tại | Collection bị xoá hoặc chưa ingest | Chạy lại `POST /ingest` |

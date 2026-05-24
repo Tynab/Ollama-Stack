@@ -41,7 +41,7 @@ MODEL_FE: str = os.environ.get("FE_MODEL",       "qwen3-coder-next")
 MODEL_BE: str = os.environ.get("BE_MODEL",       "qwen3-coder-next")
 MODEL_QA: str = os.environ.get("QA_MODEL",       "mistral-small3.2:24b")
 MODEL_DEVOPS: str = os.environ.get("DEVOPS_MODEL",   "qwen3-coder-next")
-MODEL_EMBEDDING: str = os.environ.get("EMBEDDING_MODEL", "qwen3-embedding:8b")
+# NOTE: MODEL_EMBEDDING được định nghĩa trong rag-api/ingest.py, không dùng ở agent-api.
 
 
 @dataclass
@@ -53,6 +53,8 @@ class AgentConfig:
     system_prompt: str
     # Output của các bước trước cần đưa vào context (theo thứ tự)
     depends_on: list[str] = field(default_factory=list)
+    # Gợi ý truy vấn RAG riêng cho từng vai trò (tối ưu độ chính xác của retrieval)
+    rag_query_hint: str = ""
 
 
 # ── Định nghĩa agent ─────────────────────────────────────────────────────────────
@@ -64,6 +66,7 @@ AGENTS: dict[str, AgentConfig] = {
         name="PM Agent — Project Intake & Planning",
         model=MODEL_PM,
         depends_on=[],
+        rag_query_hint="mục tiêu dự án, phạm vi, stakeholder, ràng buộc, rủi ro, timeline, roadmap, OKR",
         system_prompt="""\
 You are the PM Agent for a technology company.
 Analyze the business goal, scope, constraints, stakeholders, risks, and delivery timeline.
@@ -87,6 +90,7 @@ Structure your output with these sections:
         name="BA Agent — Requirement Analysis",
         model=MODEL_BA,
         depends_on=["pm"],
+        rag_query_hint="yêu cầu chức năng, nghiệp vụ, user story, acceptance criteria, quy tắc nghiệp vụ, NFR",
         system_prompt="""\
 You are the BA Agent.
 Analyze the project scope and raw business documents from the PM output.
@@ -112,6 +116,7 @@ Structure your output with these sections:
         name="SA Agent — Solution Architecture",
         model=MODEL_SA,
         depends_on=["pm", "ba"],
+        rag_query_hint="kiến trúc hệ thống, API contracts, data model, tích hợp, pattern, bảo mật kỹ thuật",
         system_prompt="""\
 You are the Solution Architect Agent.
 Design the technical solution based on the BA requirements and PM project plan.
@@ -137,6 +142,7 @@ Structure your output with these sections:
         name="QA Agent — Shift-left Review",
         model=MODEL_QA,
         depends_on=["ba", "sa"],
+        rag_query_hint="tiêu chí chấp nhận, kịch bản kiểm thử, edge case, rủi ro tích hợp, QA checklist",
         system_prompt="""\
 You are the QA Agent performing shift-left review.
 Review requirements, acceptance criteria, API contracts, and architecture
@@ -161,6 +167,7 @@ Structure your output with these sections:
         name="DevOps Agent — Environment & Pipeline Planning",
         model=MODEL_DEVOPS,
         depends_on=["sa"],
+        rag_query_hint="cấu hình môi trường, CI/CD pipeline, Docker, deployment, hạ tầng, monitoring",
         system_prompt="""\
 You are the DevOps Agent.
 Prepare local/dev/staging/prod environment strategy based on the architecture design.
@@ -185,6 +192,7 @@ Structure your output with these sections:
         name="BE Agent — Backend Implementation",
         model=MODEL_BE,
         depends_on=["ba", "sa", "qa_shiftleft"],
+        rag_query_hint="backend API, database, business logic, xác thực, bảo mật, xử lý lỗi, kiểm thử đơn vị",
         system_prompt="""\
 You are the Backend Agent.
 Implement backend services based on requirements, API contracts, data model,
@@ -209,6 +217,7 @@ Structure your output with these sections:
         name="FE Agent — Frontend Implementation",
         model=MODEL_FE,
         depends_on=["ba", "sa", "qa_shiftleft"],
+        rag_query_hint="frontend components, UI flow, state management, UX, form validation, API integration",
         system_prompt="""\
 You are the Frontend Agent.
 Implement frontend screens, components, routing, state management,
@@ -233,6 +242,7 @@ Structure your output with these sections:
         name="QA Agent — Test Execution & Bug Report",
         model=MODEL_QA,
         depends_on=["be", "fe"],
+        rag_query_hint="bug report, thực thi kiểm thử, regression, tiêu chí chấp nhận, release readiness",
         system_prompt="""\
 You are the QA Agent performing test execution and bug reporting.
 Review the FE and BE implementation against the acceptance criteria.
@@ -255,6 +265,7 @@ Structure your output with these sections:
         name="DevOps Agent — Release & Deploy",
         model=MODEL_DEVOPS,
         depends_on=["qa_exec"],
+        rag_query_hint="chiến lược deployment, kế hoạch rollback, health check, monitoring, release checklist",
         system_prompt="""\
 You are the DevOps Release Agent.
 Prepare deployment, release, rollback, monitoring, and post-deployment verification
@@ -279,6 +290,7 @@ Structure your output with these sections:
         name="PM Agent — Sprint / Release Closure",
         model=MODEL_PM,
         depends_on=["qa_exec", "devops_release"],
+        rag_query_hint="tóm tắt sprint, trạng thái delivery, backlog, milestone tiếp theo, vấn đề tồn đọng",
         system_prompt="""\
 You are the PM Agent performing sprint/release closure.
 Summarize delivery status, completed scope, pending scope, known risks,

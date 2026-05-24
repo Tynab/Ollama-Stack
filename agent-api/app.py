@@ -29,12 +29,15 @@ Ghi chú Concurrency
   vì dict là kiểu tham chiếu).
 """
 
+import json
 import logging
 import os
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -133,6 +136,61 @@ _store_lock = threading.Lock()
 
 _MAX_STORED_WORKFLOWS = 50  # xóa entry cũ nhất khi đạt giới hạn
 
+# ── Tài nguyên bộ nhớ sự kiện ────────────────────────────────────────────────────
+
+MEMORY_DIR: str = os.environ.get("MEMORY_DIR", "/data/memory")
+_MAX_INPUT_CHARS: int = 10_000  # Giới hạn input để phòng context overflow
+
+
+def _sanitize_input(text: str) -> str:
+    """
+    Kiểm tra và làm sạch input người dùng tại system boundary.
+    Loại bỏ ký tự điều khiển (ngoại trừ newline/tab) và cắt ngắn nếu quá dài.
+    Theo nguyên tắc SecOps: validate input trước khi đưa vào LLM context.
+    """
+    sanitized = "".join(ch for ch in text if ch >= " " or ch in "\n\r\t")
+    if len(sanitized) > _MAX_INPUT_CHARS:
+        logger.warning(
+            "Input truncated from %d to %d chars", len(sanitized), _MAX_INPUT_CHARS
+        )
+        sanitized = sanitized[:_MAX_INPUT_CHARS]
+    return sanitized.strip()
+
+
+def _log_workflow_run(
+    workflow_id: str,
+    project: str | None,
+    user_input: str,
+    completed_steps: list[str],
+    status: str,
+    error: str | None,
+    duration_seconds: float,
+) -> None:
+    """
+    Ghi thông tin workflow run ra file JSONL làm seed dữ liệu episodic memory.
+    Non-fatal: lỗi ghi file không làm gián đoạn workflow.
+    """
+    try:
+        log_dir = Path(MEMORY_DIR) / "episodic"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "workflow_id": workflow_id,
+            "project": project,
+            "user_input": user_input[:500],
+            "completed_steps": completed_steps,
+            "steps_count": len(completed_steps),
+            "status": status,
+            "error": error,
+            "duration_seconds": round(duration_seconds, 2),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        log_file = log_dir / "workflow_runs.jsonl"
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        logger.debug("Workflow run logged: %s", workflow_id)
+    except Exception as exc:
+        logger.warning("Workflow run logging failed (non-fatal): %s", exc)
+
 
 def _store_workflow(record: WorkflowRecord) -> None:
     """Lưu *record* vào store, xóa entry cũ nhất khi store đầy."""
@@ -161,9 +219,12 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
     record.status = WorkflowStatus.running
     logger.info("Workflow %s started", workflow_id)
 
+    # user_input đã được sanitize khi enqueue — dùng lại từ record để tránh xử lý hai lần.
+    sanitized_input = record.user_input
+
     initial_state: SDLCState = {
         "project": req.project,
-        "user_input": req.user_input,
+        "user_input": sanitized_input,
         "rag_enabled": req.rag_enabled,
         "rag_top_k": req.rag_top_k,
         "rag_api_url": RAG_API_URL,
@@ -173,6 +234,7 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
         "error": None,
     }
 
+    _start = time.monotonic()
     try:
         final_state: SDLCState = get_workflow().invoke(initial_state)
         record.status = WorkflowStatus.completed
@@ -185,8 +247,18 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
         record.error = str(exc)
     finally:
         record.completed_at = datetime.now(timezone.utc).isoformat()
+        _duration = time.monotonic() - _start
         logger.info("Workflow %s finished with status=%s",
                     workflow_id, record.status)
+        _log_workflow_run(
+            workflow_id=workflow_id,
+            project=req.project,
+            user_input=sanitized_input,
+            completed_steps=record.completed_steps,
+            status=record.status.value,
+            error=record.error,
+            duration_seconds=_duration,
+        )
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -238,7 +310,7 @@ def run_agent_step(role: str, req: AgentStepRequest) -> AgentStepResponse:
     try:
         output = run_single_step(
             role=role,
-            user_input=req.user_input,
+            user_input=_sanitize_input(req.user_input),
             project=req.project,
             extra_context=req.extra_context,
             prev_outputs=req.prev_outputs,
@@ -270,11 +342,13 @@ def start_workflow(req: WorkflowRunRequest, background_tasks: BackgroundTasks) -
     Mỗi bước nhận output đã cắt ngắn của các bước phụ thuộc làm context.
     """
     workflow_id = str(uuid.uuid4())
+    # Sanitize trước khi lưu vào record — đảm bảo API response và JSONL log nhất quán.
+    sanitized_input = _sanitize_input(req.user_input)
     record = WorkflowRecord(
         workflow_id=workflow_id,
         status=WorkflowStatus.pending,
         project=req.project,
-        user_input=req.user_input,
+        user_input=sanitized_input,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     _store_workflow(record)

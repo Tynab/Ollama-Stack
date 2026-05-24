@@ -48,6 +48,10 @@ logger = logging.getLogger("agent-workflow")
 OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
 RAG_API_URL: str = os.environ.get("RAG_API_URL", "http://rag-api:8090")
 RAG_TOP_K: int = int(os.environ.get("RAG_TOP_K", "5"))
+# Context window Ollama (tokens). Tăng nếu model hỗ trợ window lớn hơn.
+OLLAMA_NUM_CTX: int = int(os.environ.get("OLLAMA_CONTEXT_LENGTH", "32768"))
+# Timeout (giây) cho mỗi lần gọi RAG /ask.
+RAG_TIMEOUT: int = int(os.environ.get("RAG_TIMEOUT", "120"))
 
 
 # ── LangGraph State ───────────────────────────────────────────────────────────
@@ -85,7 +89,7 @@ def _query_rag(rag_api_url: str, question: str, project: str | None, top_k: int)
         resp = requests.post(
             f"{rag_api_url}/ask",
             json=payload,
-            timeout=120,
+            timeout=RAG_TIMEOUT,
         )
         resp.raise_for_status()
         return resp.json().get("answer", "")
@@ -110,7 +114,7 @@ def _call_agent(
         model=agent.model,
         base_url=ollama_base_url,
         temperature=0.1,
-        num_ctx=32768,
+        num_ctx=OLLAMA_NUM_CTX,
     )
     response = llm.invoke([
         SystemMessage(content=agent.system_prompt),
@@ -152,9 +156,8 @@ def _build_node(role: str):
 
         # 2. Bổ sung RAG (tùy chọn)
         if state.get("rag_enabled") and state.get("rag_api_url"):
-            rag_question = (
-                f"{agent.name} — retrieve relevant context for: {state['user_input']}"
-            )
+            _hint = agent.rag_query_hint or agent.name
+            rag_question = f"{_hint}: {state['user_input']}"
             rag_text = _query_rag(
                 state["rag_api_url"],
                 rag_question,
@@ -279,9 +282,8 @@ def run_single_step(
         context_parts.append(f"\n## Additional Context\n{extra_context}")
 
     if rag_enabled and rag_api_url:
-        rag_question = (
-            f"{agent.name} — retrieve relevant context for: {user_input}"
-        )
+        _hint = agent.rag_query_hint or agent.name
+        rag_question = f"{_hint}: {user_input}"
         rag_text = _query_rag(rag_api_url, rag_question, project, rag_top_k)
         if rag_text:
             context_parts.append(

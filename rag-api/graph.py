@@ -46,6 +46,7 @@ _driver: Driver | None = None
 
 
 def get_driver() -> Driver:
+    """Trả về singleton Neo4j Driver. Khởi tạo lần đầu và tái sử dụng sau."""
     global _driver
     if _driver is None:
         _driver = GraphDatabase.driver(

@@ -129,6 +129,9 @@ services:
       BE_MODEL: ${BE_MODEL}
       QA_MODEL: ${QA_MODEL}
       DEVOPS_MODEL: ${DEVOPS_MODEL}
+      MEMORY_DIR: /data/memory
+    volumes:
+      - ./data/memory:/data/memory
     networks:
       - yan
     depends_on:
