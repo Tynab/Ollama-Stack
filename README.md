@@ -87,7 +87,7 @@ Mỗi bước nhận truncated output của các bước phụ thuộc và tùy 
 Khi tổ chức tài liệu theo thư mục con `data/raw/{project}/{module}/`, mỗi chunk sẽ được gán `module` tự động:
 
 ```
-data/raw/yanlib/auth/auth-prd.md     → module=auth
+data/raw/yanlib/auth/auth-prd.md    → module=auth
 data/raw/yanlib/billing/schema.md   → module=billing
 data/raw/yanlib/spec.md             → module=yanlib (flat file)
 ```
