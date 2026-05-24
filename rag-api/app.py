@@ -1,4 +1,31 @@
-﻿import logging
+﻿"""
+app.py — YAN Local RAG API  (cổng 8090)
+
+Endpoints
+---------
+GET  /health                        Thông tin service: Qdrant URL, Ollama URL, model.
+GET  /projects                      Liệt kê project và trạng thái index.
+POST /ingest                        Ingest tài liệu vào Qdrant (+ Neo4j nếu GRAPH_ENABLED).
+POST /reset-ingest                  Xóa collection rồi ingest lại từ đầu.
+POST /ask                           Hỏi đáp RAG: embed câu hỏi, tìm kiếm vector, sinh câu trả lời bằng LLM.
+                                    Hỗ trợ filter theo *project* và *module*.
+GET  /graph/status                  Trạng thái kết nối Neo4j.
+GET  /graph/projects/{project}/entities  Liệt kê thực thể Neo4j của một project.
+
+Module Filter
+-------------
+POST /ask chấp nhận trường *module* tùy chọn. Nếu có, chỉ tìm kiếm trong các chunk
+có payload.module == <giá trị>. Module được sử dụng khi ingest từ cấu trúc thư mục:
+  data/raw/{project}/{module}/file.md  →  module = tên thư mục con
+  data/raw/{project}/file.md           →  module = project
+
+Singleton Clients
+-----------------
+  get_qdrant_client() và get_chat_model() dùng module-level instance cache
+  để tái sử dụng kết nối qua các request (không khởi tạo lại từng lần).
+"""
+
+import logging
 import os
 from typing import Any
 
@@ -6,6 +33,7 @@ from fastapi import FastAPI, HTTPException
 from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
+from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from ingest import GRAPH_ENABLED, RAW_DATA_DIR, get_collection_name, get_embeddings, get_projects, ingest
 
@@ -48,6 +76,7 @@ app = FastAPI(title="YAN Local RAG API", version="1.0.0")
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1)
     project: str | None = None
+    module: str | None = None
     top_k: int | None = Field(None, ge=1, le=20)
 
 
@@ -59,6 +88,9 @@ class IngestRequest(BaseModel):
 class SourceItem(BaseModel):
     score: float
     project: str | None = None
+    module: str | None = None
+    doc_type: str | None = None
+    chunk_type: str | None = None
     source_file: str | None = None
     source_path: str | None = None
     relative_path: str | None = None
@@ -77,6 +109,7 @@ _llm: ChatOllama | None = None
 
 
 def get_qdrant_client() -> QdrantClient:
+    """Trả về singleton QdrantClient. Khởi tạo lần đầu và tái sử dụng sau."""
     global _qdrant_client
     if _qdrant_client is None:
         _qdrant_client = QdrantClient(url=QDRANT_URL)
@@ -84,6 +117,7 @@ def get_qdrant_client() -> QdrantClient:
 
 
 def get_chat_model() -> ChatOllama:
+    """Trả về singleton ChatOllama. Khởi tạo lần đầu và tái sử dụng sau."""
     global _llm
     if _llm is None:
         _llm = ChatOllama(model=CHAT_MODEL,
@@ -112,6 +146,10 @@ def health() -> dict[str, Any]:
 
 @app.post("/ingest")
 def ingest_endpoint(req: IngestRequest = IngestRequest()) -> dict[str, Any]:
+    """
+    Ingest tài liệu từ data/raw/{project}/ vào Qdrant.
+    Nếu *project* là None, ingest toàn bộ project.
+    """
     try:
         return ingest(project=req.project, reset=req.reset)
     except Exception as exc:  # noqa: BLE001
@@ -121,6 +159,10 @@ def ingest_endpoint(req: IngestRequest = IngestRequest()) -> dict[str, Any]:
 
 @app.post("/reset-ingest")
 def reset_ingest_endpoint(req: IngestRequest = IngestRequest()) -> dict[str, Any]:
+    """
+    Xóa collection Qdrant (và graph Neo4j nếu GRAPH_ENABLED) rồi ingest lại từ đầu.
+    Tương đương POST /ingest với reset=true.
+    """
     try:
         return ingest(project=req.project, reset=True)
     except Exception as exc:  # noqa: BLE001
@@ -146,6 +188,15 @@ def list_projects() -> dict[str, Any]:
 
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest) -> AskResponse:
+    """
+    Hỏi đáp RAG:
+      1. Embed câu hỏi bằng EMBEDDING_MODEL.
+      2. Tìm kiếm vector trong Qdrant (filter theo project + module nếu có).
+      3. Tùy chọn làm giàu context qua Neo4j co-occurrence.
+      4. Sinh câu trả lời bằng CHAT_MODEL với context đã tổng hợp.
+
+    Trả về *answer* cùng danh sách *sources* (kèm score, module, doc_type, chunk_type).
+    """
     try:
         top_k = req.top_k or RAG_TOP_K
         logger.info("Ask started. project=%s top_k=%s question=%s",
@@ -179,11 +230,22 @@ def ask(req: AskRequest) -> AskResponse:
 
         all_hits = []
         for _proj, coll_name in collections_to_search:
+            query_filter: Filter | None = None
+            if req.module:
+                query_filter = Filter(
+                    must=[
+                        FieldCondition(
+                            key="module",
+                            match=MatchValue(value=req.module),
+                        )
+                    ]
+                )
             result = client.query_points(
                 collection_name=coll_name,
                 query=query_vector,
                 limit=top_k,
                 with_payload=True,
+                query_filter=query_filter,
             )
             all_hits.extend(result.points)
 
@@ -229,6 +291,8 @@ def ask(req: AskRequest) -> AskResponse:
                     [
                         f"[SOURCE {idx}]",
                         f"project: {project_name}",
+                        f"module: {payload.get('module', 'unknown')}",
+                        f"doc_type: {payload.get('doc_type', 'document')}",
                         f"file: {payload.get('source_file')}",
                         f"path: {payload.get('relative_path') or payload.get('source_path')}",
                         f"chunk_index: {payload.get('chunk_index')}",
@@ -242,6 +306,9 @@ def ask(req: AskRequest) -> AskResponse:
                 SourceItem(
                     score=float(hit.score),
                     project=project_name,
+                    module=payload.get("module"),
+                    doc_type=payload.get("doc_type"),
+                    chunk_type=payload.get("chunk_type"),
                     source_file=payload.get("source_file"),
                     source_path=payload.get("source_path"),
                     relative_path=payload.get("relative_path"),

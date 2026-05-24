@@ -1,9 +1,35 @@
+"""
+ingest.py — Pipeline nạp tài liệu vào Qdrant và Neo4j cho YAN RAG stack.
+
+Quy trình xử lý
+-----------------
+  load_documents()   →  split_documents()  →  embed (OllamaEmbeddings)
+  →  upsert (Qdrant)  →  save_graph (Neo4j, tùy chọn)
+
+Idềm-potency
+-----------
+  make_point_id() sinh UUID5 tất định từ path + content hash.
+  Chạy /ingest nhiều lần trên cùng file sẽ upsert đúng point_id — không tạo bản sao.
+
+Metadata chunk
+--------------
+  Mỗi chunk Qdrant có payload: source_file, relative_path, file_type,
+  chunk_index, content_hash, embedding_model, module, doc_type, chunk_type,
+  language, status, created_at, page_content, project.
+
+Graph enrichment (tùy chọn)
+----------------------------
+  Nếu GRAPH_ENABLED=true, mỗi chunk được ánh xạ vào Neo4j.
+  Nếu GRAPH_ENTITY_EXTRACTION=true, LLM sẽ trích xuất thực thể và lưu quan hệ MENTIONS.
+"""
+
 import hashlib
 import json
 import logging
 import os
 import uuid
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from pathlib import Path
 
 from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
@@ -109,6 +135,18 @@ def _safe_load_text(path: Path) -> list[Document]:
 
 
 def load_documents(raw_data_dir: str = RAW_DATA_DIR) -> list[Document]:
+    """
+    Tải tất cả file được hỗ trợ từ *raw_data_dir*.
+
+    Phương pháp tải theo đuôi file:
+      .pdf   → PyPDFLoader (mỗi trang = 1 Document)
+      .docx  → Docx2txtLoader (toàn bộ file = 1 Document)
+      others → TextLoader (thử nhiều encoding: utf-8, utf-8-sig, latin-1)
+
+    Mỗi Document được đính kèm metadata: source_file, source_path,
+    relative_path (tương đối với raw_data_dir), file_type, loader_index.
+    File không hỗ trợ sẽ bị bỏ qua; lỗi tải sẽ được log và bỏ qua.
+    """
     docs: list[Document] = []
     root = Path(raw_data_dir)
 
@@ -159,6 +197,14 @@ def load_documents(raw_data_dir: str = RAW_DATA_DIR) -> list[Document]:
 
 
 def split_documents(docs: list[Document]) -> list[Document]:
+    """
+    Cắt nhỏ tài liệu thành chunk dùng RecursiveCharacterTextSplitter.
+
+    Separator ưu tiên heading Markdown („\n# “, „\n## “ …) để giữ
+    cấu trúc tài liệu kỹ thuật vốn có heading phân cấp rõ ràng.
+    Mỗi chunk được đính thêm: chunk_index, content_hash (SHA-256),
+    chunk_size, chunk_overlap, embedding_model để hỗ trợ trá vắt và debug.
+    """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
@@ -213,6 +259,7 @@ def make_point_id(chunk: Document) -> str:
 
 
 def batched(items: list[Document], batch_size: int) -> Iterable[list[Document]]:
+    """Phân trang danh sách *items* thành các lô kích thước *batch_size*."""
     for start in range(0, len(items), batch_size):
         yield items[start: start + batch_size]
 
@@ -242,13 +289,95 @@ def _extract_entities_for_document(doc_text: str, llm: ChatOllama) -> list[dict]
 
 
 def get_embeddings() -> OllamaEmbeddings:
+    """Trả về instance OllamaEmbeddings dùng *EMBEDDING_MODEL* hiện tại."""
     return OllamaEmbeddings(
         model=EMBEDDING_MODEL,
         base_url=OLLAMA_BASE_URL,
     )
 
 
+# ── Helpers suy luận metadata chunk ──────────────────────────────────────────
+
+_DOC_TYPE_PATTERNS: list[tuple[str, str]] = [
+    ("prd",          "prd"),
+    ("brd",          "brd"),
+    ("schema",       "schema"),
+    ("api-",         "api"),
+    ("-api-",        "api"),
+    ("architecture", "architecture"),
+    ("hardening",    "security"),
+    ("audit",        "audit"),
+    ("portal",       "portal"),
+    ("marketplace",  "marketplace"),
+    ("terminology",  "glossary"),
+    ("settings",     "settings"),
+    ("billing",      "billing"),
+    ("auth-",        "auth"),
+    ("-auth-",       "auth"),
+    ("partner",      "partner"),
+    ("meeting",      "meeting-notes"),
+    ("substrate",    "infrastructure"),
+    ("foundation",   "infrastructure"),
+    ("intelligence", "intelligence"),
+]
+
+
+def _infer_module(relative_path: str, project: str) -> str:
+    """
+    Trích xuất tên module từ cấu trúc thư mục tương đối.
+    project/module/file.md  → trả về module.
+    file.md (phẳng)         → trả về project.
+    """
+    parts = Path(relative_path).parts
+    if len(parts) >= 3:
+        return parts[1]
+    if len(parts) == 2 and not Path(parts[0]).suffix:
+        return parts[0]
+    return project
+
+
+def _infer_doc_type(source_file: str, relative_path: str) -> str:
+    """Suy luận loại tài liệu (prd, schema, api...) từ tên file và đường dẫn."""
+    combined = (source_file + " " + relative_path).lower()
+    for keyword, doc_type in _DOC_TYPE_PATTERNS:
+        if keyword in combined:
+            return doc_type
+    return "document"
+
+
+def _infer_chunk_type(content: str) -> str:
+    """
+    Heuristic phân loại chunk theo nội dung:
+      table     — nhiều dòng chứa ký tự |
+      code      — dòng đầu bắt đầu bằng ký hiệu code
+      paragraph — mặc định
+    """
+    lines = [ln for ln in content.strip().splitlines() if ln.strip()]
+    if not lines:
+        return "paragraph"
+    pipe_lines = sum(1 for ln in lines if "|" in ln)
+    if pipe_lines >= 2 and pipe_lines / len(lines) > 0.4:
+        return "table"
+    code_starters = (
+        "```", "    ", "\t",
+        "def ", "class ", "function ", "import ", "from ",
+        "const ", "var ", "let ", "public ", "private ",
+        "SELECT ", "INSERT ", "UPDATE ", "CREATE ",
+    )
+    if any(lines[0].startswith(s) for s in code_starters):
+        return "code"
+    indented = sum(1 for ln in lines if ln.startswith(("    ", "\t")))
+    if len(lines) >= 3 and indented / len(lines) > 0.5:
+        return "code"
+    return "paragraph"
+
+
 def _ensure_collection(client: QdrantClient, collection_name: str, vector_size: int) -> None:
+    """
+    Tạo Qdrant collection nếu chưa tồn tại.
+    Sử dụng COSINE similarity với kích thước vector được phát hiện tự động từ model embedding.
+    Idempotent: gọi nhiều lần không gây lỗi.
+    """
     if client.collection_exists(collection_name):
         return
 
@@ -316,6 +445,7 @@ def _ingest_project(project: str, reset: bool = False) -> dict:
         texts = [chunk.page_content for chunk in chunk_batch]
         vectors = embeddings.embed_documents(texts)
 
+        _now = datetime.now(timezone.utc).isoformat()
         points = [
             PointStruct(
                 id=make_point_id(chunk),
@@ -324,6 +454,17 @@ def _ingest_project(project: str, reset: bool = False) -> dict:
                     **chunk.metadata,
                     "page_content": chunk.page_content,
                     "project": project,
+                    "module": _infer_module(
+                        chunk.metadata.get("relative_path", ""), project
+                    ),
+                    "doc_type": _infer_doc_type(
+                        chunk.metadata.get("source_file", ""),
+                        chunk.metadata.get("relative_path", ""),
+                    ),
+                    "chunk_type": _infer_chunk_type(chunk.page_content),
+                    "language": "vi",
+                    "status": "active",
+                    "created_at": _now,
                 },
             )
             for chunk, vector in zip(chunk_batch, vectors)

@@ -2,9 +2,10 @@
 title: YAN Knowledge Base
 author: YAN
 description: Query nội bộ — hỏi đáp từ các tài liệu PRD, spec, architecture đã ingest vào Qdrant qua rag-api.
+             Hỗ trợ filter theo project và module để tăng độ chính xác retrieval.
 required_open_webui_version: 0.3.0
 requirements: requests
-version: 1.0.0
+version: 1.1.0
 """
 
 import requests
@@ -31,22 +32,30 @@ class Tools:
             default=None,
             description="Project mặc định. Để trống để search tất cả projects.",
         )
+        default_module: str | None = Field(
+            default=None,
+            description="Module mặc định để lọc chunk (ví dụ: auth, billing, marketplace). Để trống để search toàn bộ project.",
+        )
 
     def __init__(self):
         self.valves = self.Valves()
 
-    def ask_internal_docs(self, question: str, project: str | None = None) -> str:
+    def ask_internal_docs(self, question: str, project: str | None = None, module: str | None = None) -> str:
         """
         Hỏi-đáp với tài liệu nội bộ: PRD, spec, architecture, billing, auth, marketplace, v.v.
         Dùng khi cần tìm thông tin trong các tài liệu kỹ thuật của dự án.
         :param question: Câu hỏi cần trả lời
-        :param project: Tên project cần query (ví dụ: auth, marketplace, billing). Để trống để search tất cả.
+        :param project: Tên project cần query (ví dụ: yanlib). Để trống để search tất cả.
+        :param module: Lọc theo module trong project (ví dụ: auth, billing, marketplace). Để trống để search toàn bộ project.
         :return: Câu trả lời kèm tên file nguồn
         """
         resolved_project = project or self.valves.default_project
+        resolved_module = module or self.valves.default_module
         payload: dict = {"question": question}
         if resolved_project:
             payload["project"] = resolved_project
+        if resolved_module:
+            payload["module"] = resolved_module
         if self.valves.top_k is not None:
             payload["top_k"] = self.valves.top_k
 
@@ -80,5 +89,9 @@ class Tools:
             ]
             if unique_files:
                 answer += "\n\n---\n**Nguồn:** " + " · ".join(unique_files)
+            # Hiển thị module/doc_type nếu có để người dùng biết context đến từ đâu
+            modules = {s.get("module") for s in sources if s.get("module")}
+            if modules:
+                answer += "\n**Module:** " + ", ".join(sorted(modules))
 
         return answer
