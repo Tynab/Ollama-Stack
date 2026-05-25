@@ -236,11 +236,24 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
 
     _start = time.monotonic()
     try:
-        final_state: SDLCState = get_workflow().invoke(initial_state)
+        final_state: SDLCState = {}  # type: ignore[assignment]
+        for chunk in get_workflow().stream(initial_state, stream_mode="updates"):
+            # chunk = {node_name: partial_state_dict}  (stream_mode="updates")
+            for node_output in chunk.values():
+                if isinstance(node_output, dict):
+                    # Cập nhật real-time để GET /workflow/{id} phản ánh tiến trình
+                    if "step_outputs" in node_output:
+                        record.step_outputs.update(node_output["step_outputs"])
+                    if "completed_steps" in node_output:
+                        record.completed_steps = list(
+                            dict.fromkeys(
+                                record.completed_steps + node_output["completed_steps"]
+                            )
+                        )
+                    if node_output.get("error"):
+                        record.error = node_output["error"]
+                    final_state.update(node_output)
         record.status = WorkflowStatus.completed
-        record.step_outputs = final_state.get("step_outputs", {})
-        record.completed_steps = final_state.get("completed_steps", [])
-        record.error = final_state.get("error")
     except Exception as exc:
         logger.exception("Workflow %s failed", workflow_id)
         record.status = WorkflowStatus.failed

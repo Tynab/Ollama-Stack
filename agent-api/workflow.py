@@ -51,7 +51,8 @@ RAG_TOP_K: int = int(os.environ.get("RAG_TOP_K", "5"))
 # Context window Ollama (tokens). Tăng nếu model hỗ trợ window lớn hơn.
 OLLAMA_NUM_CTX: int = int(os.environ.get("OLLAMA_CONTEXT_LENGTH", "32768"))
 # Timeout (giây) cho mỗi lần gọi RAG /ask.
-RAG_TIMEOUT: int = int(os.environ.get("RAG_TIMEOUT", "120"))
+# 120s là quá thấp khi Ollama phải cold-start load model; dùng 300s mặc định.
+RAG_TIMEOUT: int = int(os.environ.get("RAG_TIMEOUT", "300"))
 
 
 # ── LangGraph State ───────────────────────────────────────────────────────────

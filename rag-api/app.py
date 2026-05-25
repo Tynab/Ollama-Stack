@@ -69,6 +69,8 @@ COLLECTION_NAME = _require_env("COLLECTION_NAME")
 EMBEDDING_MODEL = _require_env("EMBEDDING_MODEL")
 CHAT_MODEL = _require_env("CHAT_MODEL")
 RAG_TOP_K = int(_require_env("RAG_TOP_K"))
+# Timeout (giây) cho mỗi lần gọi Ollama từ rag-api. Phải >= RAG_TIMEOUT của agent-api.
+OLLAMA_REQUEST_TIMEOUT: float = float(os.environ.get("OLLAMA_REQUEST_TIMEOUT", "300"))
 
 app = FastAPI(title="YAN Local RAG API", version="1.0.0")
 
@@ -120,8 +122,12 @@ def get_chat_model() -> ChatOllama:
     """Trả về singleton ChatOllama. Khởi tạo lần đầu và tái sử dụng sau."""
     global _llm
     if _llm is None:
-        _llm = ChatOllama(model=CHAT_MODEL,
-                          base_url=OLLAMA_BASE_URL, temperature=0.1)
+        _llm = ChatOllama(
+            model=CHAT_MODEL,
+            base_url=OLLAMA_BASE_URL,
+            temperature=0.1,
+            request_timeout=OLLAMA_REQUEST_TIMEOUT,
+        )
     return _llm
 
 
