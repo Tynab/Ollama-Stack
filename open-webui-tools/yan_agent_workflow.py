@@ -129,7 +129,7 @@ class Tools:
         except Exception as exc:
             return f"❌ Lỗi khi submit workflow: {exc}"
 
-        workflow_id: str = data["workflow_id"]
+        workflow_id: str = data["workflow_id"].strip()
         result_lines = [
             f"✅ **Workflow đã được khởi chạy**",
             f"- **ID:** `{workflow_id}`",
@@ -260,6 +260,7 @@ class Tools:
         :param role: Nếu muốn xem output của một step cụ thể (ví dụ: 'ba', 'sa'). Để trống để xem tóm tắt tất cả.
         :return: Kết quả workflow hoặc output của step được chọn
         """
+        workflow_id = workflow_id.strip()
         try:
             resp = requests.get(
                 f"{self._base_url()}/workflow/{workflow_id}",
