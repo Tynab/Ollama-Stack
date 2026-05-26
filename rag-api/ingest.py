@@ -6,7 +6,7 @@ Quy trình xử lý
   load_documents()   →  split_documents()  →  embed (OllamaEmbeddings)
   →  upsert (Qdrant)  →  save_graph (Neo4j, tùy chọn)
 
-Idềm-potency
+Idempotency
 -----------
   make_point_id() sinh UUID5 tất định từ path + content hash.
   Chạy /ingest nhiều lần trên cùng file sẽ upsert đúng point_id — không tạo bản sao.
@@ -203,7 +203,7 @@ def split_documents(docs: list[Document]) -> list[Document]:
     Separator ưu tiên heading Markdown („\n# “, „\n## “ …) để giữ
     cấu trúc tài liệu kỹ thuật vốn có heading phân cấp rõ ràng.
     Mỗi chunk được đính thêm: chunk_index, content_hash (SHA-256),
-    chunk_size, chunk_overlap, embedding_model để hỗ trợ trá vắt và debug.
+    chunk_size, chunk_overlap, embedding_model để hỗ trợ tra cứu và debug.
     """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,

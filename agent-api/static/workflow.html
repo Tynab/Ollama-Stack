@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YAN SDLC Agent · Workflow UI</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked@11/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+  <style>
+    /* ── Reset & tokens ───────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --surface2:  #21262d;
+      --border:    #30363d;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --accent:    #6366f1;
+      --accent-l:  #818cf8;
+      --ok:        #22c55e;
+      --warn:      #f59e0b;
+      --err:       #ef4444;
+      --run:       #3b82f6;
+      --radius:    10px;
+    }
+
+    html { font-size: 14px; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    /* ── Header ──────────────────────────────────────────────── */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(13,17,23,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .logo {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+      color: var(--text);
+    }
+    .logo em { color: var(--accent-l); font-style: normal; }
+
+    .search-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      max-width: 560px;
+    }
+
+    .search-row input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .search-row input:focus { border-color: var(--accent); }
+    .search-row input::placeholder { color: var(--muted); }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 14px;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+      white-space: nowrap;
+    }
+    .btn:hover  { opacity: .85; }
+    .btn:active { transform: scale(.97); }
+    .btn-primary   { background: var(--accent); color: #fff; }
+    .btn-secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+    .btn-sm { padding: 4px 10px; font-size: 11px; }
+
+    .poll-indicator {
+      font-size: 11px;
+      color: var(--run);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    .blink-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--run);
+      animation: blink 1.2s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+    /* ── Main layout ─────────────────────────────────────────── */
+    .main {
+      padding: 24px;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+
+    /* ── Empty / error state ────────────────────────────────── */
+    .center-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 96px 24px;
+      text-align: center;
+      gap: 12px;
+    }
+    .center-state .icon { font-size: 60px; }
+    .center-state h2 { font-size: 20px; font-weight: 700; }
+    .center-state p  { color: var(--muted); max-width: 420px; font-size: 13px; }
+
+    .err-box {
+      background: rgba(239,68,68,.08);
+      border: 1px solid rgba(239,68,68,.35);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      color: var(--err);
+      font-size: 13px;
+      max-width: 600px;
+      margin: 40px auto;
+    }
+
+    /* ── Recent list ─────────────────────────────────────────── */
+    .recent-section { margin-bottom: 24px; }
+    .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .recent-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .recent-chip {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 14px;
+      cursor: pointer;
+      transition: border-color .15s;
+    }
+    .recent-chip:hover { border-color: var(--accent); }
+    .recent-chip .rc-id { font-family: monospace; font-size: 12px; color: var(--accent-l); }
+    .recent-chip .rc-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    /* ── Workflow view ───────────────────────────────────────── */
+    .wf-view { display: none; }
+
+    /* Status bar */
+    .status-bar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .badge-pending   { background: rgba(245,158,11,.15);  color: var(--warn); }
+    .badge-running   { background: rgba(59,130,246,.15);  color: var(--run); }
+    .badge-completed { background: rgba(34,197,94,.15);   color: var(--ok); }
+    .badge-failed    { background: rgba(239,68,68,.15);   color: var(--err); }
+
+    .status-meta { display: flex; gap: 24px; flex-wrap: wrap; flex: 1; }
+    .meta-item { display: flex; flex-direction: column; gap: 2px; }
+    .meta-item .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    .meta-item .val { font-size: 13px; font-weight: 600; }
+
+    /* ── Progress tracker ────────────────────────────────────── */
+    .progress-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 16px;
+    }
+    .progress-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .progress-head .section-label { margin-bottom: 0; }
+    .progress-count { font-size: 13px; color: var(--muted); }
+    .progress-count strong { color: var(--text); font-size: 18px; }
+
+    .steps-track {
+      display: flex;
+      align-items: flex-start;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .step-node {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 72px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .step-circle {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--surface2);
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 700;
+      transition: all .25s;
+      position: relative;
+      z-index: 1;
+    }
+    .step-circle svg { width: 18px; height: 18px; stroke-width: 2.5; }
+
+    .step-node.done  .step-circle {
+      background: rgba(34,197,94,.12);
+      border-color: var(--ok);
+      color: var(--ok);
+    }
+    .step-node.active .step-circle {
+      background: rgba(59,130,246,.12);
+      border-color: var(--run);
+      color: var(--run);
+      animation: ring-pulse 1.6s ease-in-out infinite;
+    }
+    .step-node.selected .step-circle {
+      box-shadow: 0 0 0 3px rgba(99,102,241,.45);
+    }
+    @keyframes ring-pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(59,130,246,.5); }
+      60%      { box-shadow: 0 0 0 9px rgba(59,130,246,.0); }
+    }
+
+    .step-label {
+      font-size: 10px;
+      font-weight: 600;
+      margin-top: 7px;
+      color: var(--muted);
+      text-align: center;
+      white-space: nowrap;
+    }
+    .step-sublabel {
+      font-size: 9px;
+      color: var(--muted);
+      text-align: center;
+      opacity: .65;
+      white-space: nowrap;
+      max-width: 68px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .step-node.done  .step-label { color: var(--ok); }
+    .step-node.active .step-label { color: var(--run); }
+
+    .step-connector {
+      flex: 1;
+      min-width: 6px;
+      height: 2px;
+      background: var(--border);
+      margin-top: 19px; /* center on 40px circle */
+      flex-shrink: 1;
+      transition: background .4s;
+    }
+    .step-connector.done   { background: var(--ok); }
+    .step-connector.active { background: linear-gradient(90deg, var(--ok), var(--run)); }
+
+    /* ── Content card ────────────────────────────────────────── */
+    .content-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    /* Tabs */
+    .tabs-nav {
+      display: flex;
+      overflow-x: auto;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+    .tabs-nav::-webkit-scrollbar { height: 3px; }
+    .tabs-nav::-webkit-scrollbar-thumb { background: var(--border); }
+
+    .tab-btn {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 10px 14px;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color .15s;
+    }
+    .tab-btn:hover   { color: var(--text); }
+    .tab-btn.active  { color: var(--accent-l); border-bottom-color: var(--accent); }
+    .tab-btn.t-done  { color: var(--ok); }
+    .tab-btn.t-run   { color: var(--run); }
+    .tab-btn.t-done.active, .tab-btn.t-run.active { color: var(--accent-l); }
+
+    .tab-icon { font-size: 13px; }
+
+    /* Content area */
+    .tab-body {
+      padding: 28px;
+      min-height: 420px;
+    }
+
+    /* Loading / waiting states */
+    .state-box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 80px 24px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .state-box .big-icon { font-size: 44px; }
+    .state-box h3 { font-size: 15px; font-weight: 700; color: var(--text); }
+    .state-box p  { font-size: 12px; max-width: 320px; }
+
+    .spinner {
+      width: 44px;
+      height: 44px;
+      border: 3px solid var(--surface2);
+      border-top-color: var(--run);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Markdown render ─────────────────────────────────────── */
+    .md {
+      font-size: 13.5px;
+      line-height: 1.8;
+      color: var(--text);
+    }
+    .md h1,.md h2,.md h3,.md h4,.md h5 {
+      color: var(--text);
+      font-weight: 700;
+      margin: 1.5em 0 .6em;
+    }
+    .md h1 { font-size: 1.55em; border-bottom: 1px solid var(--border); padding-bottom: .35em; }
+    .md h2 { font-size: 1.25em; border-bottom: 1px solid var(--border); padding-bottom: .25em; }
+    .md h3 { font-size: 1.1em; }
+    .md p  { margin: .75em 0; }
+    .md ul,.md ol { margin: .75em 0 .75em 1.6em; }
+    .md li { margin: .3em 0; }
+    .md strong { font-weight: 700; color: #f0f6fc; }
+    .md em { font-style: italic; color: #cdd9e5; }
+    .md a  { color: var(--accent-l); text-decoration: none; }
+    .md a:hover { text-decoration: underline; }
+    .md hr { border: none; border-top: 1px solid var(--border); margin: 1.5em 0; }
+    .md blockquote {
+      border-left: 3px solid var(--accent);
+      padding: .5em 1em;
+      margin: 1em 0;
+      background: var(--surface2);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      color: var(--muted);
+    }
+    .md code {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      border-radius: 5px;
+      font-family: 'SF Mono','Fira Code','Cascadia Code',monospace;
+      font-size: .9em;
+      color: var(--accent-l);
+    }
+    .md pre {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      overflow-x: auto;
+      margin: 1em 0;
+    }
+    .md pre code { background: none; border: none; padding: 0; color: var(--text); font-size: .9em; }
+    .md table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+    .md th, .md td { border: 1px solid var(--border); padding: 7px 12px; text-align: left; font-size: 13px; }
+    .md th { background: var(--surface2); font-weight: 700; }
+    .md tr:nth-child(even) { background: rgba(255,255,255,.02); }
+
+    /* ── Toast ───────────────────────────────────────────────── */
+    .toast {
+      position: fixed;
+      bottom: 24px; right: 24px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      padding: 10px 16px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      z-index: 999;
+      animation: slide-up .25s ease;
+    }
+    @keyframes slide-up {
+      from { transform: translateY(12px); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+
+    /* ── Scrollbar ───────────────────────────────────────────── */
+    ::-webkit-scrollbar       { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--surface); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  </style>
+</head>
+<body>
+
+<!-- ── HEADER ────────────────────────────────────────────────────────── -->
+<header class="header">
+  <div class="logo">YAN <em>SDLC</em> Agent</div>
+
+  <div class="search-row">
+    <input id="wid-input" type="text" placeholder="Nhập Workflow ID…" spellcheck="false" />
+    <button class="btn btn-primary" onclick="trackFromInput()">Track</button>
+    <button class="btn btn-secondary" onclick="showRecent()">Recent</button>
+  </div>
+
+  <div id="poll-indicator" class="poll-indicator" style="display:none">
+    <span class="blink-dot"></span>Polling…
+  </div>
+  <button id="copy-btn" class="btn btn-secondary btn-sm" style="display:none" onclick="copyId()">Copy ID</button>
+</header>
+
+<!-- ── MAIN ──────────────────────────────────────────────────────────── -->
+<main class="main">
+
+  <!-- Empty state -->
+  <div id="empty-state" class="center-state">
+    <div class="icon">🤖</div>
+    <h2>YAN SDLC Agent Workflow</h2>
+    <p>Nhập Workflow ID để theo dõi tiến trình 13 bước, hoặc nhấn <strong>Recent</strong> để xem các lần chạy gần đây.</p>
+  </div>
+
+  <!-- Error box -->
+  <div id="err-box" class="err-box" style="display:none"></div>
+
+  <!-- Recent list -->
+  <div id="recent-section" class="recent-section" style="display:none">
+    <div class="section-label">Workflows gần đây</div>
+    <div id="recent-grid" class="recent-grid"></div>
+  </div>
+
+  <!-- ── Workflow view ─────────────────────────────────────────────── -->
+  <div id="wf-view" class="wf-view">
+
+    <!-- Status bar -->
+    <div class="status-bar" id="status-bar">
+      <div id="status-badge"></div>
+      <div class="status-meta" id="status-meta"></div>
+    </div>
+
+    <!-- Progress tracker -->
+    <div class="progress-card">
+      <div class="progress-head">
+        <span class="section-label">13-Step SDLC Pipeline</span>
+        <span class="progress-count"><strong id="steps-done">0</strong> / 13 hoàn thành</span>
+      </div>
+      <div class="steps-track" id="steps-track"></div>
+    </div>
+
+    <!-- Tab content card -->
+    <div class="content-card">
+      <div class="tabs-nav" id="tabs-nav"></div>
+      <div class="tab-body" id="tab-body"></div>
+    </div>
+
+  </div><!-- /wf-view -->
+
+</main>
+
+<!-- ── SVG ICONS ──────────────────────────────────────────────────────── -->
+<svg style="display:none">
+  <symbol id="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+    <polyline points="20 6 9 17 4 12"/>
+  </symbol>
+  <symbol id="icon-loader" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+    <line x1="12" y1="2" x2="12" y2="6"/>
+    <line x1="12" y1="18" x2="12" y2="22"/>
+    <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
+    <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+    <line x1="2" y1="12" x2="6" y2="12"/>
+    <line x1="18" y1="12" x2="22" y2="12"/>
+    <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/>
+    <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+  </symbol>
+</svg>
+
+<script>
+/* ────────────────────────────────────────────────────────────────────────
+   CONFIG
+   ──────────────────────────────────────────────────────────────────────── */
+const STEPS = [
+  { role: 'ba',           label: 'BA',        name: 'Business Analysis' },
+  { role: 'pm',           label: 'PM',        name: 'Project Management' },
+  { role: 'sa',           label: 'SA',        name: 'Solution Architecture' },
+  { role: 'ta',           label: 'TA',        name: 'Technical Architecture' },
+  { role: 'designer',     label: 'Designer',  name: 'UI/UX Design' },
+  { role: 'fe',           label: 'FE',        name: 'Frontend Engineering' },
+  { role: 'mobile',       label: 'Mobile',    name: 'Mobile Engineering' },
+  { role: 'be',           label: 'BE',        name: 'Backend Implementation' },
+  { role: 'dba',          label: 'DBA',       name: 'Database Architecture' },
+  { role: 'da',           label: 'DA',        name: 'Data Analysis' },
+  { role: 'tech_lead',    label: 'Tech Lead', name: 'Code Review' },
+  { role: 'tester',      label: 'Tester',    name: 'Testing & Quality' },
+  { role: 'devsecops',    label: 'DevSecOps', name: 'CI/CD & Infra' },
+];
+const POLL_MS = 2500;
+
+/* ────────────────────────────────────────────────────────────────────────
+   STATE
+   ──────────────────────────────────────────────────────────────────────── */
+let currentId    = null;   // workflow_id being tracked
+let pollTimer    = null;   // setTimeout handle
+let durTimer     = null;   // setInterval for live duration
+let activeTab    = null;   // currently displayed tab role
+let lastData     = null;   // last successful API response
+let startTime    = null;   // Date of created_at for duration counter
+let userPickedTab = false; // true when user manually clicked a tab
+
+/* ────────────────────────────────────────────────────────────────────────
+   INIT — pick up workflow_id from URL query string
+   ──────────────────────────────────────────────────────────────────────── */
+(function init() {
+  const p = new URLSearchParams(window.location.search);
+  const id = p.get('id');
+  if (id) {
+    document.getElementById('wid-input').value = id;
+    trackWorkflow(id);
+  }
+  document.getElementById('wid-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') trackFromInput();
+  });
+
+  // Configure marked
+  marked.setOptions({ breaks: true, gfm: true });
+})();
+
+/* ────────────────────────────────────────────────────────────────────────
+   ENTRY POINTS
+   ──────────────────────────────────────────────────────────────────────── */
+function trackFromInput() {
+  const id = document.getElementById('wid-input').value.trim();
+  if (!id) return;
+  trackWorkflow(id);
+}
+
+function trackWorkflow(id) {
+  stopAll();
+  currentId    = id;
+  activeTab    = null;
+  userPickedTab = false;
+  lastData     = null;
+  startTime    = null;
+
+  pushUrl(id);
+  showView('wf');
+  document.getElementById('copy-btn').style.display = 'inline-flex';
+  fetchAndUpdate();
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   FETCH & POLL
+   ──────────────────────────────────────────────────────────────────────── */
+async function fetchAndUpdate() {
+  if (!currentId) return;
+  try {
+    const res = await fetch(`/workflow/${currentId}`);
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({ detail: res.statusText }));
+      showError(j.detail || `HTTP ${res.status}`);
+      stopAll();
+      return;
+    }
+    const data = await res.json();
+
+    // Auto-set active tab to latest completed step on first meaningful load
+    if (!userPickedTab) {
+      const completed = data.completed_steps || [];
+      if (completed.length > 0) {
+        activeTab = completed[completed.length - 1];
+      } else {
+        activeTab = STEPS[0].role;
+      }
+    }
+
+    lastData = data;
+    renderAll(data);
+    document.getElementById('err-box').style.display = 'none';
+
+    const live = data.status === 'running' || data.status === 'pending';
+    setPollIndicator(live);
+    if (live) {
+      pollTimer = setTimeout(fetchAndUpdate, POLL_MS);
+    } else {
+      stopDur();
+    }
+  } catch (e) {
+    showError(e.message);
+    stopAll();
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   RENDER
+   ──────────────────────────────────────────────────────────────────────── */
+function renderAll(data) {
+  renderStatusBar(data);
+  renderProgress(data);
+  renderTabs(data);
+  renderTabBody(data);
+}
+
+/* ── Status bar ─────────────────────────────────────────────────────── */
+function renderStatusBar(data) {
+  const badgeEl = document.getElementById('status-badge');
+  const metaEl  = document.getElementById('status-meta');
+
+  const MAP = {
+    pending:   { cls: 'badge-pending',   dot: true,  label: 'Pending' },
+    running:   { cls: 'badge-running',   dot: true,  label: 'Running' },
+    completed: { cls: 'badge-completed', dot: false, label: 'Completed' },
+    failed:    { cls: 'badge-failed',    dot: false, label: 'Failed' },
+  };
+  const s = MAP[data.status] || MAP.failed;
+
+  badgeEl.innerHTML = `
+    <span class="badge ${s.cls}">
+      ${s.dot ? '<span class="blink-dot"></span>' : ''}
+      ${s.label}
+    </span>`;
+
+  // Duration
+  if ((data.status === 'running' || data.status === 'pending') && !startTime) {
+    startTime = new Date(data.created_at);
+    startDur();
+  }
+  if (data.status !== 'running' && data.status !== 'pending') stopDur();
+
+  const dur = data.completed_at
+    ? fmtDur(new Date(data.created_at), new Date(data.completed_at))
+    : (startTime ? fmtDur(startTime, new Date()) : '—');
+
+  metaEl.innerHTML = `
+    <div class="meta-item">
+      <span class="lbl">Project</span>
+      <span class="val">${data.project || '—'}</span>
+    </div>
+    <div class="meta-item">
+      <span class="lbl">Started</span>
+      <span class="val">${fmtTime(data.created_at)}</span>
+    </div>
+    <div class="meta-item">
+      <span class="lbl">Duration</span>
+      <span class="val" id="dur-val">${dur}</span>
+    </div>
+    <div class="meta-item">
+      <span class="lbl">Steps</span>
+      <span class="val">${(data.completed_steps || []).length} / 12</span>
+    </div>
+    ${data.error ? `
+    <div class="meta-item" style="flex:1 1 100%">
+      <span class="lbl">Error</span>
+      <span class="val" style="color:var(--err); font-size:12px">${esc(data.error)}</span>
+    </div>` : ''}
+  `;
+}
+
+/* ── Progress tracker ───────────────────────────────────────────────── */
+function renderProgress(data) {
+  const completed = new Set(data.completed_steps || []);
+  const running   = data.status === 'running' || data.status === 'pending';
+
+  // Determine current active step
+  let currentStep = null;
+  if (running) {
+    for (const s of STEPS) {
+      if (!completed.has(s.role)) { currentStep = s.role; break; }
+    }
+  }
+
+  document.getElementById('steps-done').textContent = completed.size;
+
+  const track = document.getElementById('steps-track');
+  track.innerHTML = '';
+
+  STEPS.forEach((step, i) => {
+    const isDone     = completed.has(step.role);
+    const isActive   = step.role === currentStep;
+    const isSelected = step.role === activeTab;
+
+    // Connector (before step except first)
+    if (i > 0) {
+      const prevDone = completed.has(STEPS[i - 1].role);
+      const conn = document.createElement('div');
+      conn.className = 'step-connector'
+        + (isDone && prevDone ? ' done' : '')
+        + (isActive && prevDone ? ' active' : '');
+      track.appendChild(conn);
+    }
+
+    // Step node
+    const node = document.createElement('div');
+    node.className = 'step-node'
+      + (isDone   ? ' done'     : '')
+      + (isActive ? ' active'   : '')
+      + (isSelected ? ' selected' : '');
+    node.onclick = () => selectTab(step.role);
+
+    let circleContent;
+    if (isDone) {
+      circleContent = `<svg><use href="#icon-check"/></svg>`;
+    } else if (isActive) {
+      circleContent = `<svg style="animation:spin .8s linear infinite"><use href="#icon-loader"/></svg>`;
+    } else {
+      circleContent = `${i + 1}`;
+    }
+
+    node.innerHTML = `
+      <div class="step-circle">${circleContent}</div>
+      <div class="step-label">${step.label}</div>
+      <div class="step-sublabel">${step.name}</div>`;
+    track.appendChild(node);
+  });
+}
+
+/* ── Tabs ───────────────────────────────────────────────────────────── */
+function renderTabs(data) {
+  const completed  = new Set(data.completed_steps || []);
+  const running    = data.status === 'running' || data.status === 'pending';
+  let   currentStep = null;
+  if (running) {
+    for (const s of STEPS) { if (!completed.has(s.role)) { currentStep = s.role; break; } }
+  }
+
+  const nav = document.getElementById('tabs-nav');
+  nav.innerHTML = '';
+
+  STEPS.forEach(step => {
+    const isDone  = completed.has(step.role);
+    const isRun   = step.role === currentStep;
+    const isActv  = step.role === activeTab;
+
+    const icon = isDone ? '✓' : isRun ? '⟳' : '○';
+    const btn = document.createElement('button');
+    btn.className = 'tab-btn'
+      + (isDone ? ' t-done' : '')
+      + (isRun  ? ' t-run'  : '')
+      + (isActv ? ' active' : '');
+    btn.innerHTML = `<span class="tab-icon">${icon}</span>${step.label}`;
+    btn.onclick = () => selectTab(step.role);
+    nav.appendChild(btn);
+  });
+}
+
+/* ── Tab body ───────────────────────────────────────────────────────── */
+function renderTabBody(data) {
+  const completed  = new Set(data.completed_steps || []);
+  const running    = data.status === 'running' || data.status === 'pending';
+  let   currentStep = null;
+  if (running) {
+    for (const s of STEPS) { if (!completed.has(s.role)) { currentStep = s.role; break; } }
+  }
+
+  const body = document.getElementById('tab-body');
+  const step = STEPS.find(s => s.role === activeTab);
+  if (!step) return;
+
+  const output = data.step_outputs && data.step_outputs[activeTab];
+
+  if (output) {
+    // Completed — render markdown
+    const clean = DOMPurify.sanitize(marked.parse(output));
+    body.innerHTML = `<div class="md">${clean}</div>`;
+
+  } else if (step.role === currentStep) {
+    // Currently running
+    body.innerHTML = `
+      <div class="state-box">
+        <div class="spinner"></div>
+        <h3>${step.name}</h3>
+        <p>Agent đang xử lý… Kết quả sẽ hiển thị tại đây khi hoàn thành.</p>
+      </div>`;
+
+  } else if (completed.has(step.role)) {
+    // Completed but step_outputs not included (shouldn't happen normally)
+    body.innerHTML = `
+      <div class="state-box">
+        <div class="spinner"></div>
+        <p>Đang tải output…</p>
+      </div>`;
+
+  } else if (running) {
+    // Pending step — workflow still running
+    const stepIdx    = STEPS.findIndex(s => s.role === step.role);
+    const currentIdx = STEPS.findIndex(s => s.role === currentStep);
+    const stepsAway  = stepIdx - currentIdx;
+    body.innerHTML = `
+      <div class="state-box">
+        <div class="big-icon">⏳</div>
+        <h3>${step.name}</h3>
+        <p>Chờ hoàn thành ${stepsAway} bước trước.
+           Hiện tại đang xử lý: <strong>${currentStep ? STEPS.find(s=>s.role===currentStep)?.name : '…'}</strong></p>
+      </div>`;
+
+  } else {
+    // Not started / workflow ended before this step
+    body.innerHTML = `
+      <div class="state-box">
+        <div class="big-icon" style="opacity:.35">○</div>
+        <h3 style="color:var(--muted)">${step.name}</h3>
+        <p>Chưa chạy.</p>
+      </div>`;
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   TAB SELECTION
+   ──────────────────────────────────────────────────────────────────────── */
+function selectTab(role) {
+  userPickedTab = true;
+  activeTab     = role;
+  if (lastData) {
+    renderProgress(lastData);
+    renderTabs(lastData);
+    renderTabBody(lastData);
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   RECENT WORKFLOWS
+   ──────────────────────────────────────────────────────────────────────── */
+async function showRecent() {
+  stopAll();
+  showView('recent');
+  const grid = document.getElementById('recent-grid');
+  grid.innerHTML = '<span style="color:var(--muted);font-size:12px">Loading…</span>';
+
+  try {
+    const res  = await fetch('/workflows');
+    const data = await res.json();
+
+    if (!data.workflows.length) {
+      grid.innerHTML = '<span style="color:var(--muted);font-size:12px">Chưa có workflow nào.</span>';
+      return;
+    }
+
+    grid.innerHTML = '';
+    data.workflows.forEach(w => {
+      const iconMap = { pending:'⏳', running:'⟳', completed:'✓', failed:'✗' };
+      const icon    = iconMap[w.status] || '?';
+      const chip    = document.createElement('div');
+      chip.className = 'recent-chip';
+      chip.innerHTML = `
+        <div class="rc-id">${icon} ${w.workflow_id.substring(0, 16)}…</div>
+        <div class="rc-meta">${w.project || 'no project'} · ${w.completed_steps}/${w.total_steps} steps · ${fmtTime(w.created_at)}</div>`;
+      chip.onclick = () => {
+        document.getElementById('wid-input').value = w.workflow_id;
+        trackWorkflow(w.workflow_id);
+      };
+      grid.appendChild(chip);
+    });
+  } catch (e) {
+    grid.innerHTML = `<span style="color:var(--err);font-size:12px">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   HELPERS
+   ──────────────────────────────────────────────────────────────────────── */
+function showView(which) {
+  document.getElementById('empty-state').style.display      = which === 'empty'  ? 'flex' : 'none';
+  document.getElementById('recent-section').style.display   = which === 'recent' ? 'block' : 'none';
+  document.getElementById('wf-view').style.display          = which === 'wf'     ? 'block' : 'none';
+  document.getElementById('err-box').style.display          = 'none';
+}
+
+function showError(msg) {
+  showView('empty');
+  const box = document.getElementById('err-box');
+  box.textContent = '⚠️  ' + msg;
+  box.style.display = 'block';
+}
+
+function stopAll() {
+  if (pollTimer) { clearTimeout(pollTimer);  pollTimer = null; }
+  stopDur();
+  setPollIndicator(false);
+}
+
+function setPollIndicator(on) {
+  document.getElementById('poll-indicator').style.display = on ? 'flex' : 'none';
+}
+
+function startDur() {
+  stopDur();
+  durTimer = setInterval(() => {
+    const el = document.getElementById('dur-val');
+    if (el && startTime) el.textContent = fmtDur(startTime, new Date());
+  }, 1000);
+}
+function stopDur() {
+  if (durTimer) { clearInterval(durTimer); durTimer = null; }
+}
+
+function fmtDur(from, to) {
+  const s = Math.max(0, Math.floor((to - from) / 1000));
+  const m = Math.floor(s / 60);
+  return `${m}:${(s % 60).toString().padStart(2, '0')}`;
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleTimeString(); } catch { return iso; }
+}
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function pushUrl(id) {
+  const u = new URL(window.location);
+  u.searchParams.set('id', id);
+  window.history.pushState({}, '', u);
+}
+
+function copyId() {
+  if (!currentId) return;
+  navigator.clipboard.writeText(currentId).then(() => {
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = '✓ Copied workflow ID';
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 2000);
+  });
+}
+</script>
+</body>
+</html>

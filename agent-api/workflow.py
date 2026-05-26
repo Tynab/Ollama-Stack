@@ -3,8 +3,7 @@ workflow.py — Bộ điều phối SDLC workflow dùng LangGraph.
 
 Cấu trúc đồ thị (tuần tự nghiêm ngặt)
 --------------------------------------
-  pm → ba → sa → qa_shiftleft → devops_env
-     → be → fe → qa_exec → devops_release → pm_closure → END
+  ba -> pm -> sa -> ta -> designer -> fe -> mobile -> dba -> be -> da -> tech_lead -> tester -> devsecops -> END
 
 Mỗi node thực thi ba giai đoạn:
   1. Tổng hợp context  — chèn output (đã cắt ngắn) từ các bước phụ thuộc.
@@ -51,21 +50,40 @@ RAG_TOP_K: int = int(os.environ.get("RAG_TOP_K", "5"))
 # Context window Ollama (tokens). Tăng nếu model hỗ trợ window lớn hơn.
 OLLAMA_NUM_CTX: int = int(os.environ.get("OLLAMA_CONTEXT_LENGTH", "32768"))
 # Timeout (giây) cho mỗi lần gọi RAG /ask.
-# 120s là quá thấp khi Ollama phải cold-start load model; dùng 300s mặc định.
-RAG_TIMEOUT: int = int(os.environ.get("RAG_TIMEOUT", "300"))
+# 600s để xử lý việc Ollama hoán đổi model (qwen3 ↔ qwen2.5-coder) giữa các bước.
+RAG_TIMEOUT: int = int(os.environ.get("RAG_TIMEOUT", "600"))
 
 
-# ── LangGraph State ───────────────────────────────────────────────────────────
+# ── Quy tắc chung được chèn vào system prompt của mọi agent ─────────────────
+COMMON_AGENT_RULES: str = """\
+Critical rules — apply to every response:
+1. Use ONLY the provided User Input, Previous Agent Outputs, Required Tech Stack, and RAG Knowledge Base Context. Do not invent information from outside these sources.
+2. Do not invent business requirements, APIs, database fields, UI screens, permissions, SLA rules, cost figures, or infrastructure config unless explicitly marked as [Proposed].
+3. Classify important statements with one of these labels:
+   - [Confirmed]: directly supported by input or context.
+   - [Assumption]: reasonable inference, not explicitly stated — must be flagged.
+   - [Open Question]: requires PO/PM/Tech confirmation before proceeding.
+   - [Proposed]: suggested implementation option, not yet decided.
+4. If information is missing, place it under Open Questions instead of silently filling the gap.
+5. Do not repeat large sections from previous agents. Produce only the artifact owned by your role.
+6. Keep IDs consistent across artifacts (req ID, user story ID, test case ID).
+7. Prefer concise Markdown tables for implementation-ready outputs.
+8. If sources are available in RAG context, reference the source file name in a Notes/Source column.
+9. If actual source code is not provided, clearly label your output as Design Review, not Code Review. Do not invent file names, line numbers, or PR comments.
+"""
+
+
+# ── Trạng thái LangGraph ───────────────────────────────────────────────────────────
 
 class SDLCState(TypedDict):
-    """State dùng chung được truyền qua các LangGraph node."""
+    """Trạng thái dùng chung được truyền qua các LangGraph node."""
 
-    project: str | None           # RAG collection filter (optional)
-    user_input: str               # original business goal / request
-    rag_enabled: bool             # whether to query RAG per step
-    rag_top_k: int                # number of RAG results per query
-    rag_api_url: str              # rag-api base URL
-    ollama_base_url: str          # Ollama base URL
+    project: str | None           # Bộ lọc RAG collection (tùy chọn)
+    user_input: str               # Mục tiêu kinh doanh / yêu cầu gốc
+    rag_enabled: bool             # Có truy vấn RAG mỗi bước không
+    rag_top_k: int                # Số kết quả RAG mỗi truy vấn
+    rag_api_url: str              # URL cơ sở của rag-api
+    ollama_base_url: str          # URL cơ sở của Ollama
 
     # operator.or_  → gộp dict:  {**hiện_tại, **node_return}
     step_outputs: Annotated[dict[str, str], operator.or_]
@@ -73,10 +91,12 @@ class SDLCState(TypedDict):
     # operator.add  → nối list: hiện_tại + node_return
     completed_steps: Annotated[list[str], operator.add]
 
-    error: str | None             # thông báo lỗi đầu tiên; None nếu không có lỗi
+    tech_stack: list[str] | None    # danh sách công nghệ bắt buộc (ngôn ngữ, framework, DB, infra)
+
+    error: str | None             # Thông báo lỗi đầu tiên; None nếu không có lỗi
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Hàm tiện ích ───────────────────────────────────────────────────────────────────
 
 def _query_rag(rag_api_url: str, question: str, project: str | None, top_k: int) -> str:
     """
@@ -118,7 +138,7 @@ def _call_agent(
         num_ctx=OLLAMA_NUM_CTX,
     )
     response = llm.invoke([
-        SystemMessage(content=agent.system_prompt),
+        SystemMessage(content=COMMON_AGENT_RULES + "\n\n---\n\n" + agent.system_prompt),
         HumanMessage(content=context),
     ])
     return str(response.content)
@@ -145,14 +165,24 @@ def _build_node(role: str):
 
         # 1. Tổng hợp context
         context_parts: list[str] = [
-            f"## Business Goal / User Input\n{state['user_input']}"
+            f"## Mục tiêu kinh doanh / Yêu cầu đầu vào\n{state['user_input']}"
         ]
+
+        # Chèn tech stack ngay sau user input nếu có
+        tech_stack = state.get("tech_stack")
+        if tech_stack:
+            stack_lines = "\n".join(f"- {item}" for item in tech_stack)
+            context_parts.append(
+                f"\n## Công nghệ bắt buộc\n"
+                f"Các công nghệ sau BẪT BUỘC phải sử dụng. Không đề xuất lựa chọn khác "
+                f"trừ khi được yêu cầu rõ ràng.\n{stack_lines}"
+            )
 
         for dep in agent.depends_on:
             if dep in step_outputs:
                 dep_name = AGENTS[dep].name
                 context_parts.append(
-                    f"\n## {dep_name} Output\n{_truncate(step_outputs[dep])}"
+                    f"\n## Kết quả {dep_name}\n{_truncate(step_outputs[dep])}"
                 )
 
         # 2. Bổ sung RAG (tùy chọn)
@@ -167,7 +197,7 @@ def _build_node(role: str):
             )
             if rag_text:
                 context_parts.append(
-                    f"\n## RAG Knowledge Base Context\n{_truncate(rag_text)}"
+                    f"\n## Context từ Knowledge Base\n{_truncate(rag_text)}"
                 )
 
         context = "\n".join(context_parts)
@@ -178,9 +208,9 @@ def _build_node(role: str):
             output = _call_agent(agent, state.get(
                 "ollama_base_url", OLLAMA_BASE_URL), context)
         except Exception as exc:
-            logger.error("Agent '%s' failed: %s", role, exc)
-            output = f"[ERROR in {role}] {exc}"
-            error_msg = f"Step '{role}' failed: {exc}"
+            logger.error("Agent '%s' gặp lỗi: %s", role, exc)
+            output = f"[LỖI trong {role}] {exc}"
+            error_msg = f"Bước '{role}' thất bại: {exc}"
 
         logger.info("Step %d | %s | output_len=%d",
                     agent.step_id, agent.name, len(output))
@@ -206,7 +236,7 @@ def build_workflow():
     Biên dịch SDLC StateGraph.
 
     Node được thêm theo thứ tự WORKFLOW_STEPS; cạnh được thêm tuần tự
-    để đồ thị phản ánh luồng SDLC kiểu Waterfall/Agile truyền thống.
+    để đồ thị phản ánh luồng SDLC theo mô hình Waterfall/Agile truyền thống.
     Trả về LangGraph runnable đã biên dịch.
     """
     graph: StateGraph = StateGraph(SDLCState)
@@ -226,7 +256,7 @@ def build_workflow():
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
 # Double-checked locking đảm bảo đồ thị chỉ được biên dịch đúng một lần
-# dù nhiều request đến đồng thời lúc khởi động.
+# dù nhiều request đến cùng lúc khi khởi động.
 
 _workflow = None
 _workflow_lock = threading.Lock()
@@ -241,7 +271,7 @@ def get_workflow():
     return _workflow
 
 
-# ── Chạy từng bước đơn lẻ (dùng bởi endpoint /agent/{role}) ─────────────────
+# ── Chạy từng bước đơn lẻ (dùng bởi endpoint /agent/{role}) ────────────────
 
 def run_single_step(
     role: str,
@@ -249,6 +279,7 @@ def run_single_step(
     project: str | None = None,
     extra_context: str | None = None,
     prev_outputs: dict[str, str] | None = None,
+    tech_stack: list[str] | None = None,
     rag_enabled: bool = True,
     rag_top_k: int = RAG_TOP_K,
     ollama_base_url: str = OLLAMA_BASE_URL,
@@ -270,17 +301,25 @@ def run_single_step(
     agent = AGENTS[role]
     step_outputs: dict[str, str] = prev_outputs or {}
 
-    context_parts: list[str] = [f"## Business Goal / User Input\n{user_input}"]
+    context_parts: list[str] = [f"## Mục tiêu kinh doanh / Yêu cầu đầu vào\n{user_input}"]
+
+    if tech_stack:
+        stack_lines = "\n".join(f"- {item}" for item in tech_stack)
+        context_parts.append(
+            f"\n## Công nghệ bắt buộc\n"
+            f"Các công nghệ sau BẪT BUỘC phải sử dụng. Không đề xuất lựa chọn khác "
+            f"trừ khi được yêu cầu rõ ràng.\n{stack_lines}"
+        )
 
     for dep in agent.depends_on:
         if dep in step_outputs:
             dep_name = AGENTS[dep].name
             context_parts.append(
-                f"\n## {dep_name} Output\n{_truncate(step_outputs[dep])}"
+                f"\n## Kết quả {dep_name}\n{_truncate(step_outputs[dep])}"
             )
 
     if extra_context:
-        context_parts.append(f"\n## Additional Context\n{extra_context}")
+        context_parts.append(f"\n## Context bổ sung\n{extra_context}")
 
     if rag_enabled and rag_api_url:
         _hint = agent.rag_query_hint or agent.name
@@ -288,7 +327,7 @@ def run_single_step(
         rag_text = _query_rag(rag_api_url, rag_question, project, rag_top_k)
         if rag_text:
             context_parts.append(
-                f"\n## RAG Knowledge Base Context\n{_truncate(rag_text)}"
+                f"\n## Context từ Knowledge Base\n{_truncate(rag_text)}"
             )
 
     context = "\n".join(context_parts)

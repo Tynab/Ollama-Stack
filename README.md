@@ -12,20 +12,20 @@ Local AI stack chạy hoàn toàn offline: **Ollama** (LLM inference) + **Qdrant
 | `qdrant`     | `qdrant/qdrant:latest`             | 6333 / 6334   | Vector database (REST / gRPC)                          |
 | `neo4j`      | `neo4j:5-community`                | 7474 / 7687   | Knowledge graph (Neo4j Browser / Bolt)                 |
 | `rag-api`    | build `./rag-api`                  | 8090          | FastAPI RAG service (ingest + ask)                     |
-| `agent-api`  | build `./agent-api`                | 8091          | FastAPI SDLC Agent Orchestrator (10-step AI workflow)  |
+| `agent-api`  | build `./agent-api`                  | 8091          | FastAPI SDLC Agent Orchestrator (13-step SDLC workflow) |
 | `open-webui` | `ghcr.io/open-webui/open-webui`    | 8085          | Chat UI kết nối Ollama & Qdrant                        |
 | `watchtower` | `containrrr/watchtower`            | —             | Tự động pull & restart image mới nhất                 |
 | `deunhealth` | `qmcgaw/deunhealth`                | 9999          | Restart container khi healthcheck fail                 |
 
 **Models mặc định** (cấu hình trong `.env` → section `SDLC Agent Models`):
 
-| Mục đích         | Env var           | Model mặc định           |
-|------------------|-------------------|--------------------------|
-| Embedding        | `EMBEDDING_MODEL` | `qwen3-embedding:8b`     |
-| Chat (RAG API)   | `CHAT_MODEL`      | `qwen2.5-coder:14b`      |
-| PM / BA / SA     | `*_MODEL`         | `qwen3.6:35b`            |
-| BE / FE / DevOps | `*_MODEL`         | `qwen3-coder-next`       |
-| QA               | `QA_MODEL`        | `mistral-small3.2:24b`   |
+| Mục đích                                    | Env var(s)                                                        | Model production          |
+|---------------------------------------------|-------------------------------------------------------------------|---------------------------|
+| Embedding                                   | `EMBEDDING_MODEL`                                                 | `qwen3-embedding:8b`      |
+| Chat — RAG API `/ask`                        | `CHAT_MODEL`                                                      | `qwen2.5-coder:14b`       |
+| Reasoning agents (BA / PM / SA / TA / DA)   | `BA_MODEL` `PM_MODEL` `SA_MODEL` `TA_MODEL` `DA_MODEL`            | `qwen3.6:35b`             |
+| Coding agents (FE / Mobile / BE / DBA / Tech Lead / DevSecOps) | `FE_MODEL` `MOBILE_MODEL` `BE_MODEL` `DBA_MODEL` `TECH_LEAD_MODEL` `DEVSECOPS_MODEL` | `qwen3-coder-next` |
+| Creative agents (QA / Designer)             | `QA_MODEL` `DESIGNER_MODEL`                                       | `qwen3.5:35b`             |
 
 > **Lưu ý:** Đổi `EMBEDDING_MODEL` yêu cầu re-ingest toàn bộ documents (`POST /ingest {"reset": true}`).
 
@@ -42,27 +42,30 @@ User → Open WebUI (8085)
          │                                       └── Ollama (embedding + chat)
          │
          └── yan_agent_workflow.py  →  Agent API (8091)
-                                           ├── LangGraph SDLC Workflow
-                                           │     PM → BA → SA → QA → DevOps Env
-                                           │     → BE → FE → QA Exec → DevOps Release
-                                           │     → PM Closure
+                                           ├── LangGraph SDLC Workflow (13 bước)
+                                           │     BA → PM → SA → TA → Designer
+                                           │     → FE → Mobile → DBA → BE → DA
+                                           │     → Tech Lead → Tester → DevSecOps
                                            └── Ollama (per-role models)
 ```
 
-### SDLC Workflow (10 bước)
+### SDLC Workflow (13 bước)
 
-| Step | Role              | Tên                                  | Model        | Phụ thuộc            |
-|------|-------------------|--------------------------------------|--------------|----------------------|
-| 1    | `pm`              | PM — Project Intake & Planning       | PM_MODEL     | —                    |
-| 2    | `ba`              | BA — Requirement Analysis            | BA_MODEL     | pm                   |
-| 3    | `sa`              | SA — Solution Architecture           | SA_MODEL     | pm, ba               |
-| 4    | `qa_shiftleft`    | QA — Shift-left Review               | QA_MODEL     | ba, sa               |
-| 5    | `devops_env`      | DevOps — Environment & Pipeline Plan | DEVOPS_MODEL | sa                   |
-| 6    | `be`              | BE — Backend Implementation          | BE_MODEL     | ba, sa, qa_shiftleft |
-| 7    | `fe`              | FE — Frontend Implementation         | FE_MODEL     | ba, sa, qa_shiftleft |
-| 8    | `qa_exec`         | QA — Test Execution & Bug Report     | QA_MODEL     | be, fe               |
-| 9    | `devops_release`  | DevOps — Release & Deploy            | DEVOPS_MODEL | qa_exec              |
-| 10   | `pm_closure`      | PM — Sprint / Release Closure        | PM_MODEL     | qa_exec, devops_release |
+| Bước | Role            | Tên                                          | Model             | Phụ thuộc                              |
+|------|-----------------|----------------------------------------------|-------------------|----------------------------------------|
+| 1    | `ba`            | BA — Phân tích nghiệp vụ                     | BA_MODEL          | —                                      |
+| 2    | `pm`            | PM — Quản lý dự án & Lập kế hoạch           | PM_MODEL          | ba                                     |
+| 3    | `sa`            | SA — Kiến trúc giải pháp                    | SA_MODEL          | ba, pm                                 |
+| 4    | `ta`            | TA — Kiến trúc kỹ thuật                     | TA_MODEL          | ba, sa                                 |
+| 5    | `designer`      | Designer — Thiết kế UI/UX                   | DESIGNER_MODEL    | ba, sa, ta                             |
+| 6    | `fe`            | FE — Kỹ thuật Frontend                      | FE_MODEL          | ba, sa, ta, designer                   |
+| 7    | `mobile`        | Mobile — Phát triển Mobile                  | MOBILE_MODEL      | ba, sa, ta, designer                   |
+| 8    | `dba`           | DBA — Kiến trúc cơ sở dữ liệu              | DBA_MODEL         | ba, sa, ta                             |
+| 9    | `be`            | BE — Triển khai Backend                     | BE_MODEL          | ba, sa, ta, fe, mobile, dba            |
+| 10   | `da`            | DA — Phân tích & Báo cáo dữ liệu           | DA_MODEL          | ba, sa, dba                            |
+| 11   | `tech_lead`     | Tech Lead — Review code & Tiêu chuẩn        | TECH_LEAD_MODEL   | fe, mobile, be, dba                    |
+| 12   | `tester`        | Tester — Kiểm thử & Đảm bảo chất lượng    | QA_MODEL          | be, fe, mobile, tech_lead, designer    |
+| 13   | `devsecops`     | DevSecOps — Hạ tầng, CI/CD & Bảo mật       | DEVSECOPS_MODEL   | sa, tester                             |
 
 Mỗi bước nhận truncated output của các bước phụ thuộc và tùy chọn RAG context từ knowledge base.
 
@@ -126,8 +129,8 @@ Mỗi dòng là một JSON object:
   "workflow_id": "a1b2c3d4-...",
   "project": "yanlib",
   "user_input": "Xây dựng checkout flow...",
-  "completed_steps": ["pm","ba","sa","qa_shiftleft","devops_env","be","fe","qa_exec","devops_release","pm_closure"],
-  "steps_count": 10,
+  "completed_steps": ["ba","pm","sa","ta","designer","fe","mobile","dba","be","da","tech_lead","tester","devsecops"],
+  "steps_count": 13,
   "status": "completed",
   "error": null,
   "duration_seconds": 842.5,
@@ -178,8 +181,8 @@ Ollama-Stack/
 │   └── Dockerfile
 ├── agent-api/
 │   ├── app.py                    # FastAPI SDLC Agent Orchestrator API
-│   ├── agents.py                 # 10 agent configs (model, system prompt, deps, rag_query_hint)
-│   ├── workflow.py               # LangGraph StateGraph — 10-step SDLC workflow
+│   ├── agents.py                 # 13 cấu hình agent (model, system prompt, deps, rag_query_hint)
+│   ├── workflow.py               # LangGraph StateGraph — 13-bước SDLC workflow
 │   ├── requirements.txt
 │   └── Dockerfile
 └── open-webui-tools/
@@ -213,13 +216,22 @@ Các biến quan trọng cần xem lại:
 # ─── SDLC Agent Models ───────────────────────────────────────────────────────
 # Thay đổi model ở đây → restart agent-api (không cần rebuild)
 EMBEDDING_MODEL=qwen3-embedding:8b
-PM_MODEL=qwen3.6:35b
+# Reasoning agents (BA / PM / SA / TA / DA)
 BA_MODEL=qwen3.6:35b
+PM_MODEL=qwen3.6:35b
 SA_MODEL=qwen3.6:35b
+TA_MODEL=qwen3.6:35b
+DA_MODEL=qwen3.6:35b
+# Coding agents (FE / Mobile / BE / DBA / Tech Lead / DevSecOps)
 FE_MODEL=qwen3-coder-next
+MOBILE_MODEL=qwen3-coder-next
 BE_MODEL=qwen3-coder-next
-QA_MODEL=mistral-small3.2:24b
-DEVOPS_MODEL=qwen3-coder-next
+DBA_MODEL=qwen3-coder-next
+TECH_LEAD_MODEL=qwen3-coder-next
+DEVSECOPS_MODEL=qwen3-coder-next
+# Creative/QA agents (Designer / Tester)
+DESIGNER_MODEL=qwen3.5:35b
+QA_MODEL=qwen3.5:35b
 
 # ─── RAG API ─────────────────────────────────────────────────────────────────
 CHAT_MODEL=qwen2.5-coder:14b    # model dùng cho /ask response
@@ -259,14 +271,14 @@ docker exec ollama ollama pull qwen3-embedding:8b
 # Chat (RAG API)
 docker exec ollama ollama pull qwen2.5-coder:14b
 
-# SDLC Agents — reasoning (PM / BA / SA)
+# SDLC Agents — reasoning (BA / PM / SA / TA / DA)
 docker exec ollama ollama pull qwen3.6:35b
 
-# SDLC Agents — coding (BE / FE / DevOps)
+# SDLC Agents — coding (FE / Mobile / BE / DBA / Tech Lead / DevSecOps)
 docker exec ollama ollama pull qwen3-coder-next
 
-# SDLC Agents — QA
-docker exec ollama ollama pull mistral-small3.2:24b
+# SDLC Agents — creative/QA (Designer / Tester)
+docker exec ollama ollama pull qwen3.5:35b
 ```
 
 Kiểm tra models đã có:
@@ -359,8 +371,8 @@ curl -s http://localhost:8091/health | jq
   "status": "ok",
   "ollama_base_url": "http://ollama:11434",
   "rag_api_url": "http://rag-api:8090",
-  "agents": 10,
-  "workflow_steps": ["pm","ba","sa","qa_shiftleft","devops_env","be","fe","qa_exec","devops_release","pm_closure"]
+  "agents": 13,
+  "workflow_steps": ["ba","pm","sa","ta","designer","fe","mobile","dba","be","da","tech_lead","tester","devsecops"]
 }
 ```
 
@@ -372,8 +384,8 @@ curl -s http://localhost:8091/agents | jq
 ### Chạy single-step agent
 
 ```bash
-# Chạy PM agent riêng lẻ
-curl -s -X POST http://localhost:8091/agent/pm \
+# Chạy BA agent riêng lẻ
+curl -s -X POST http://localhost:8091/agent/ba \
   -H "Content-Type: application/json" \
   -d '{
     "user_input": "Xây dựng hệ thống quản lý billing cho SaaS platform",
@@ -382,14 +394,14 @@ curl -s -X POST http://localhost:8091/agent/pm \
     "rag_top_k": 5
   }' | jq .output
 
-# Chạy BA agent với output của PM từ trước
-curl -s -X POST http://localhost:8091/agent/ba \
+# Chạy PM agent với output của BA từ trước
+curl -s -X POST http://localhost:8091/agent/pm \
   -H "Content-Type: application/json" \
   -d '{
     "user_input": "Xây dựng hệ thống quản lý billing cho SaaS platform",
     "project": "billing",
     "prev_outputs": {
-      "pm": "<output của PM agent ở trên>"
+      "ba": "<output của BA agent ở trên>"
     }
   }' | jq .output
 ```
@@ -412,7 +424,7 @@ curl -s -X POST http://localhost:8091/workflow/run \
 {
   "workflow_id": "a1b2c3d4-...",
   "status": "pending",
-  "message": "Workflow queued. Poll GET /workflow/a1b2c3d4-... for status."
+  "message": "Workflow đã được xếp hàng. Poll GET /workflow/a1b2c3d4-... để kiểm tra trạng thái."
 }
 ```
 
@@ -434,10 +446,10 @@ curl -s http://localhost:8091/workflows | jq
 |-------------|---------------------------------------------------|
 | `pending`   | Đã queue, chưa bắt đầu                           |
 | `running`   | LangGraph đang chạy các steps                    |
-| `completed` | Tất cả 10 steps hoàn thành                       |
+| `completed` | Tất cả 13 bước hoàn thành                       |
 | `failed`    | Exception không xử lý được; xem field `error`    |
 
-> **Lưu ý:** Nếu một step gặp lỗi LLM, nó ghi `[ERROR in <role>] ...` vào `step_outputs` và `error` field, nhưng workflow **tiếp tục chạy** các bước tiếp theo (non-fatal).
+> **Lưu ý:** Nếu một bước gặp lỗi LLM (timeout, model chưa pull, v.v.), nó ghi `[LỖI trong <role>] ...` vào `step_outputs` và `error` field, nhưng workflow **tiếp tục chạy** các bước tiếp theo (non-fatal per step).
 
 ---
 
@@ -681,7 +693,7 @@ Chạy full SDLC AI workflow hoặc từng agent đơn lẻ.
 
 | Function              | Mô tả                                                      |
 |-----------------------|------------------------------------------------------------|
-| `run_sdlc_workflow`   | Chạy đầy đủ 10 bước, polls đến khi xong, trả về summary   |
+| `run_sdlc_workflow`   | Chạy đầy đủ 13 bước, polls đến khi xong, trả về summary   |
 | `run_agent_step`      | Chạy 1 agent role đơn lẻ (sync)                           |
 | `get_workflow_result` | Lấy kết quả workflow theo ID, filter theo role             |
 | `list_agent_roles`    | Liệt kê tất cả roles, models, thứ tự chạy                 |
@@ -787,7 +799,7 @@ docker compose down -v
 | `/ask` với `module` không trả kết quả | Module chưa tồn tại trong collection | Kiểm tra tên module = tên thư mục con trong project |
 | Embedding chậm / timeout | Model chưa được pull | `docker exec ollama ollama pull qwen3-embedding:8b` |
 | SDLC workflow `status=failed` | Xem field `error` | `curl .../workflow/{id} \| jq .error` |
-| SDLC step output bắt đầu bằng `[ERROR` | LLM timeout hoặc model chưa pull | Kiểm tra model đã pull, tăng `RAG_TIMEOUT` trong `.env` |
+| SDLC step output bắt đầu bằng `[LỖI` | LLM timeout hoặc model chưa pull | Kiểm tra model đã pull, tăng `RAG_TIMEOUT` trong `.env` |
 | `user_input` bị cắt ngắn trong workflow | Input > 10 000 ký tự | Input được sanitize tự động; chia nhỏ nếu cần |
 | `workflow_runs.jsonl` không được tạo | `MEMORY_DIR` không mount | Kiểm tra volume `./data/memory:/data/memory` trong `docker-compose.yml` |
 | Open WebUI không gọi được rag-api | URL sai (dùng `localhost`) | Valve `rag_api_url` = `http://rag-api:8090` |

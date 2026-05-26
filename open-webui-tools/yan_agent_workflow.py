@@ -2,11 +2,11 @@
 title: YAN SDLC Agent Workflow
 author: YAN
 description: >
-  Khởi chạy SDLC Agent Workflow theo thứ tự PM → BA → SA → QA → DevOps → BE → FE → QA exec → DevOps release → PM closure.
-  Hỗ trợ chạy full workflow hoặc từng agent đơn lẻ.
+  Khởi chạy SDLC Agent Workflow 13 bước: BA → PM → SA → TA → Designer → FE → Mobile → BE → DBA → DA → Tech Lead → Tester → DevSecOps.
+  Hỗ trợ chạy full workflow (async + polling) hoặc từng agent đơn lẻ (sync).
 required_open_webui_version: 0.3.0
 requirements: requests
-version: 1.0.0
+version: 2.0.0
 """
 
 import time
@@ -14,30 +14,37 @@ import time
 import requests
 from pydantic import BaseModel, Field
 
+# Thứ tự thực thi chuẩn — phải khớp với WORKFLOW_STEPS trong agent-api/agents.py
 _VALID_ROLES = [
-    "pm",
     "ba",
+    "pm",
     "sa",
-    "qa_shiftleft",
-    "devops_env",
-    "be",
+    "ta",
+    "designer",
     "fe",
-    "qa_exec",
-    "devops_release",
-    "pm_closure",
+    "mobile",
+    "be",
+    "dba",
+    "da",
+    "tech_lead",
+    "tester",
+    "devsecops",
 ]
 
 _ROLE_DESCRIPTIONS = {
-    "pm": "PM Agent — Project Intake & Planning",
-    "ba": "BA Agent — Requirement Analysis",
-    "sa": "SA Agent — Solution Architecture",
-    "qa_shiftleft": "QA Agent — Shift-left Review",
-    "devops_env": "DevOps Agent — Environment & Pipeline Planning",
-    "be": "BE Agent — Backend Implementation",
-    "fe": "FE Agent — Frontend Implementation",
-    "qa_exec": "QA Agent — Test Execution & Bug Report",
-    "devops_release": "DevOps Agent — Release & Deploy",
-    "pm_closure": "PM Agent — Sprint / Release Closure",
+    "ba":           "BA Agent — Business Analysis",
+    "pm":           "PM Agent — Project Management & Planning",
+    "sa":           "SA Agent — Solution Architecture",
+    "ta":           "TA Agent — Technical Architecture",
+    "designer":     "Designer Agent — UI/UX Design",
+    "fe":           "FE Agent — Frontend Engineering",
+    "mobile":       "Mobile Agent — Mobile Engineering",
+    "be":           "BE Agent — Backend Implementation",
+    "dba":          "DBA Agent — Database Architecture",
+    "da":           "DA Agent — Data Analysis & Reporting",
+    "tech_lead":    "Tech Lead Agent — Code Review & Standards",
+    "tester":       "Tester Agent — Testing & Quality Assurance",
+    "devsecops":    "DevSecOps Agent — Infrastructure, CI/CD & Deployment",
 }
 
 
@@ -77,7 +84,7 @@ class Tools:
     def __init__(self):
         self.valves = self.Valves()
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
+    # ── Hàm nội bộ ──────────────────────────────────────────────────────
 
     def _base_url(self) -> str:
         return self.valves.agent_api_url.rstrip("/")
@@ -89,7 +96,7 @@ class Tools:
             f"Chi tiết: {exc}"
         )
 
-    # ── Tools ─────────────────────────────────────────────────────────────────
+    # ── Công cụ ─────────────────────────────────────────────────────────────────
 
     def run_sdlc_workflow(
         self,
@@ -97,8 +104,8 @@ class Tools:
         project: str | None = None,
     ) -> str:
         """
-        Chạy toàn bộ SDLC Workflow (PM → BA → SA → QA → DevOps → BE → FE → QA exec → Deploy → PM closure).
-        Mỗi agent đọc output của agent trước và bổ sung RAG context từ knowledge base.
+        Chạy toàn bộ SDLC Workflow 13 bước (BA → PM → SA → TA → Designer → FE → Mobile → BE → DBA → DA → Tech Lead → Tester → DevSecOps).
+        Mỗi agent nhận output đã cắt ngắn của các agent phụ thuộc và bổ sung RAG context từ knowledge base.
 
         :param user_input: Mô tả business goal / feature / project cần phân tích và implement
         :param project: Tên project RAG cần filter (ví dụ: 'yanlib'). Để trống để search tất cả.
@@ -194,7 +201,7 @@ class Tools:
         Chạy một agent step đơn lẻ (không cần chạy full workflow).
         Dùng để test từng agent hoặc bổ sung output thủ công.
 
-        :param role: Tên agent role. Hợp lệ: pm, ba, sa, qa_shiftleft, devops_env, be, fe, qa_exec, devops_release, pm_closure
+        :param role: Tên agent role. Hợp lệ: ba, pm, sa, ta, designer, fe, mobile, be, dba, da, tech_lead, tester, devsecops
         :param user_input: Business goal / context đầu vào cho agent
         :param extra_context: Context bổ sung (ví dụ: output từ step trước dán vào)
         :param project: RAG project filter. Để trống để search tất cả.
