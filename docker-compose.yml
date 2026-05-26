@@ -2,7 +2,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
-    pull_policy: always
+    pull_policy: if_not_present
     tty: true
     ports:
       - "11434:11434"
@@ -85,7 +85,7 @@ services:
       CHUNK_OVERLAP: ${CHUNK_OVERLAP}
       UPSERT_BATCH_SIZE: ${UPSERT_BATCH_SIZE}
       RAG_TOP_K: ${RAG_TOP_K}
-      OLLAMA_REQUEST_TIMEOUT: ${OLLAMA_REQUEST_TIMEOUT:-300}
+      OLLAMA_REQUEST_TIMEOUT: ${OLLAMA_REQUEST_TIMEOUT:-600}
       NEO4J_URI: ${NEO4J_URI}
       NEO4J_USERNAME: ${NEO4J_USERNAME}
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}
@@ -123,14 +123,20 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
       RAG_API_URL: ${RAG_API_URL}
       RAG_TOP_K: ${RAG_TOP_K}
-      RAG_TIMEOUT: ${RAG_TIMEOUT:-300}
-      PM_MODEL: ${PM_MODEL}
+      RAG_TIMEOUT: ${RAG_TIMEOUT:-600}
       BA_MODEL: ${BA_MODEL}
+      PM_MODEL: ${PM_MODEL}
       SA_MODEL: ${SA_MODEL}
+      TA_MODEL: ${TA_MODEL}
+      DESIGNER_MODEL: ${DESIGNER_MODEL}
       FE_MODEL: ${FE_MODEL}
+      MOBILE_MODEL: ${MOBILE_MODEL}
+      DBA_MODEL: ${DBA_MODEL}
+      DA_MODEL: ${DA_MODEL}
       BE_MODEL: ${BE_MODEL}
-      QA_MODEL: ${QA_MODEL}
-      DEVOPS_MODEL: ${DEVOPS_MODEL}
+      TECH_LEAD_MODEL: ${TECH_LEAD_MODEL}
+      TESTER_MODEL: ${TESTER_MODEL}
+      DEVSECOPS_MODEL: ${DEVSECOPS_MODEL}
       MEMORY_DIR: /data/memory
     volumes:
       - ./data/memory:/data/memory

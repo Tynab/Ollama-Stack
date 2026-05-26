@@ -7,7 +7,7 @@ GET  /health                 Thông tin service: Ollama URL, RAG URL, số agent
 GET  /agents                 Liệt kê cấu hình tất cả agent (step, model, depends_on).
 POST /agent/{role}           Gọi đồng bộ một bước agent đơn lẻ.
                              Body: AgentStepRequest  →  AgentStepResponse
-POST /workflow/run           Gửi workflow SDLC 10 bước để chạy nền.
+POST /workflow/run           Gửi workflow SDLC 13 agents để chạy nền.
                              Body: WorkflowRunRequest  →  {workflow_id, status}
 GET  /workflow/{workflow_id} Kiểm tra trạng thái hoặc lấy kết quả đã hoàn thành.
                              Response: WorkflowRecord
@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from agents import AGENTS, WORKFLOW_STEPS
@@ -74,8 +75,10 @@ logger = logging.getLogger("agent-api")
 
 app = FastAPI(title="YAN SDLC Agent Orchestrator", version="1.0.0")
 
+_STATIC_DIR = Path(__file__).parent / "static"
 
-# ── Mô hình Request / Response ───────────────────────────────────────────────────
+
+# ── Mô hình Request / Response ─────────────────────────────────────────────
 
 class AgentStepRequest(BaseModel):
     user_input: str = Field(..., min_length=1,
@@ -87,6 +90,8 @@ class AgentStepRequest(BaseModel):
     prev_outputs: dict[str, str] | None = Field(
         None, description="Output của các bước trước để chèn vào context (role → text)"
     )
+    tech_stack: list[str] | None = Field(
+        None, description="Danh sách tech stack bắt buộc. Ví dụ: ['nestjs', 'reactjs', 'mongodb']")
     rag_enabled: bool = Field(
         True, description="Có query RAG knowledge base không")
     rag_top_k: int = Field(RAG_TOP_K, ge=1, le=20)
@@ -106,6 +111,15 @@ class WorkflowRunRequest(BaseModel):
         None, description="RAG project filter (ví dụ: 'yanlib')")
     rag_enabled: bool = Field(True)
     rag_top_k: int = Field(RAG_TOP_K, ge=1, le=20)
+    tech_stack: list[str] | None = Field(
+        None,
+        description=(
+            "Danh sách tech stack bắt buộc (ngôn ngữ, framework, DB, infra). "
+            "Ví dụ: ['nestjs', 'reactjs', 'mongodb', 'k8s', 'react native']. "
+            "TA Agent sẽ thiết kế kiến trúc dựa trên stack này; các agent khác "
+            "cũng sẽ bám sát đúng các công nghệ này."
+        ),
+    )
 
 
 class WorkflowStatus(str, Enum):
@@ -120,6 +134,7 @@ class WorkflowRecord(BaseModel):
     status: WorkflowStatus
     project: str | None
     user_input: str
+    tech_stack: list[str] | None = None
     step_outputs: dict[str, str] = {}
     completed_steps: list[str] = []
     error: str | None = None
@@ -127,8 +142,8 @@ class WorkflowRecord(BaseModel):
     completed_at: str | None = None
 
 
-# ── Lưu trữ workflow trong bộ nhớ (khóa theo workflow_id) ───────────────────────────
-# Dùng cho local stack; production nên dùng Redis hoặc database.
+# ── Lưu trữ workflow trong bộ nhớ (khóa theo workflow_id) ──────────────────────
+# Dùng cho local stack; môi trường production nên dùng Redis hoặc database.
 # _store_lock đồng bộ hóa mọi thao tác đọc/ghi để tránh race condition.
 
 workflow_store: dict[str, WorkflowRecord] = {}
@@ -206,7 +221,7 @@ def _store_workflow(record: WorkflowRecord) -> None:
 def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
     """
     Task nền: chạy toàn bộ SDLC LangGraph workflow và cập nhật
-    WorkflowRecord trực tiếp.  Được gọi bởi FastAPI BackgroundTasks.
+    WorkflowRecord trực tiếp. Được gọi bởi FastAPI BackgroundTasks.
 
     Việc cập nhật *record* an toàn vì:
     - Chỉ có duy nhất một background task cho mỗi workflow_id.
@@ -225,6 +240,7 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
     initial_state: SDLCState = {
         "project": req.project,
         "user_input": sanitized_input,
+        "tech_stack": req.tech_stack,
         "rag_enabled": req.rag_enabled,
         "rag_top_k": req.rag_top_k,
         "rag_api_url": RAG_API_URL,
@@ -253,15 +269,15 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
                     if node_output.get("error"):
                         record.error = node_output["error"]
                     final_state.update(node_output)
-        record.status = WorkflowStatus.completed
+        record.status = WorkflowStatus.failed if record.error else WorkflowStatus.completed
     except Exception as exc:
-        logger.exception("Workflow %s failed", workflow_id)
+        logger.exception("Workflow %s thất bại", workflow_id)
         record.status = WorkflowStatus.failed
         record.error = str(exc)
     finally:
         record.completed_at = datetime.now(timezone.utc).isoformat()
         _duration = time.monotonic() - _start
-        logger.info("Workflow %s finished with status=%s",
+        logger.info("Workflow %s hoàn thành với status=%s",
                     workflow_id, record.status)
         _log_workflow_run(
             workflow_id=workflow_id,
@@ -274,7 +290,7 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
         )
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health() -> dict[str, Any]:
@@ -314,11 +330,11 @@ def run_agent_step(role: str, req: AgentStepRequest) -> AgentStepResponse:
     if role not in AGENTS:
         raise HTTPException(
             status_code=404,
-            detail=f"Unknown role '{role}'. Valid: {list(AGENTS.keys())}",
+            detail=f"Role '{role}' không tồn tại. Hợp lệ: {list(AGENTS.keys())}",
         )
 
     agent = AGENTS[role]
-    logger.info("Single step: role=%s project=%s", role, req.project)
+    logger.info("Bước đơn lẻ: role=%s project=%s", role, req.project)
 
     try:
         output = run_single_step(
@@ -327,13 +343,14 @@ def run_agent_step(role: str, req: AgentStepRequest) -> AgentStepResponse:
             project=req.project,
             extra_context=req.extra_context,
             prev_outputs=req.prev_outputs,
+            tech_stack=req.tech_stack,
             rag_enabled=req.rag_enabled,
             rag_top_k=req.rag_top_k,
             ollama_base_url=OLLAMA_BASE_URL,
             rag_api_url=RAG_API_URL,
         )
     except Exception as exc:
-        logger.exception("Agent step failed: role=%s", role)
+        logger.exception("Bước agent thất bại: role=%s", role)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return AgentStepResponse(
@@ -347,11 +364,10 @@ def run_agent_step(role: str, req: AgentStepRequest) -> AgentStepResponse:
 @app.post("/workflow/run")
 def start_workflow(req: WorkflowRunRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     """
-    Gửi workflow SDLC 10 bước để chạy bất đồng bộ.
+    Gửi workflow SDLC 13 agent để chạy bất đồng bộ.
 
-    Trả về ngay với workflow_id.  Poll GET /workflow/{id} để kiểm tra trạng thái.
-    Workflow chạy tuần tự: PM → BA → SA → QA shift-left → DevOps env
-    → BE → FE → QA exec → DevOps release → PM closure.
+    Trả về ngay với workflow_id. Poll GET /workflow/{id} để kiểm tra trạng thái.
+    Workflow chạy tuần tự: BA → PM → SA → TA → Designer → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps.
     Mỗi bước nhận output đã cắt ngắn của các bước phụ thuộc làm context.
     """
     workflow_id = str(uuid.uuid4())
@@ -362,15 +378,16 @@ def start_workflow(req: WorkflowRunRequest, background_tasks: BackgroundTasks) -
         status=WorkflowStatus.pending,
         project=req.project,
         user_input=sanitized_input,
+        tech_stack=req.tech_stack,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     _store_workflow(record)
     background_tasks.add_task(_run_workflow_task, workflow_id, req)
-    logger.info("Workflow %s queued", workflow_id)
+    logger.info("Workflow %s đã được xếp hàng", workflow_id)
     return {
         "workflow_id": workflow_id,
         "status": "pending",
-        "message": f"Workflow queued. Poll GET /workflow/{workflow_id} for status.",
+        "message": f"Workflow đã được xếp hàng. Poll GET /workflow/{workflow_id} để kiểm tra trạng thái.",
     }
 
 
@@ -382,7 +399,7 @@ def get_workflow_status(workflow_id: str) -> WorkflowRecord:
     if record is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Workflow '{workflow_id}' not found. It may have been evicted or never started.",
+            detail=f"Workflow '{workflow_id}' không tìm thấy. Có thể đã bị xóa khỏi store hoặc chưa bắt đầu.",
         )
     return record
 
@@ -407,3 +424,10 @@ def list_workflows() -> dict[str, Any]:
             for r in reversed(snapshot)
         ],
     }
+
+
+@app.get("/ui", include_in_schema=False)
+@app.get("/ui/", include_in_schema=False)
+def workflow_ui() -> FileResponse:
+    """Phục vụ SDLC Workflow UI (single-page application)."""
+    return FileResponse(_STATIC_DIR / "workflow.html")

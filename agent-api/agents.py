@@ -1,47 +1,59 @@
 """
-agents.py — Cấu hình vai trò agent trong quy trình SDLC.
+agents.py — Cấu hình cho 13 agent SDLC trong LangGraph workflow.
 
-Định nghĩa pipeline 10 bước SDLC được dùng bởi LangGraph workflow:
+Định nghĩa pipeline 13 agent:
 
-  Bước  Vai trò           Model         Phụ thuộc
-  ───── ───────────────── ───────────── ─────────────────────
-   1    pm                PM_MODEL      —
-   2    ba                BA_MODEL      pm
-   3    sa                SA_MODEL      pm, ba
-   4    qa_shiftleft      QA_MODEL      ba, sa
-   5    devops_env        DEVOPS_MODEL  sa
-   6    be                BE_MODEL      ba, sa, qa_shiftleft
-   7    fe                FE_MODEL      ba, sa, qa_shiftleft
-   8    qa_exec           QA_MODEL      be, fe
-   9    devops_release    DEVOPS_MODEL  qa_exec
-  10    pm_closure        PM_MODEL      qa_exec, devops_release
+  Bước  Role           Model              Phụ thuộc
+  ----- -------------- ------------------ ----------------------------------
+   1    ba             BA_MODEL           --
+   2    pm             PM_MODEL           ba
+   3    sa             SA_MODEL           ba, pm
+   4    ta             TA_MODEL           ba, sa
+   5    designer       DESIGNER_MODEL     ba, sa, ta
+   6    fe             FE_MODEL           ba, sa, ta, designer
+   7    mobile         MOBILE_MODEL       ba, sa, ta, designer
+   8    dba            DBA_MODEL          ba, sa, ta
+   9    be             BE_MODEL           ba, sa, ta, fe, mobile, dba
+  10    da             DA_MODEL           ba, sa, dba
+  11    tech_lead      TECH_LEAD_MODEL    fe, mobile, be, dba
+  12    tester         TESTER_MODEL       be, fe, mobile, tech_lead, designer
+  13    devsecops      DEVSECOPS_MODEL    sa, ta, tech_lead, tester
 
 Chọn model
 ----------
-Model của mỗi vai trò được lấy từ env var lúc import module, cho phép
-thay đổi trong .env và áp dụng khi restart container (không cần rebuild).
-Giá trị mặc định dự phòng dùng cho môi trường local không có .env.
+Model của từng role được đọc từ biến môi trường lúc import, cho phép
+thay đổi model chỉ cần sửa .env và restart container (không cần rebuild).
+Giá trị mặc định được dùng khi biến môi trường vắng mặt.
 
-Thêm vai trò mới
-----------------
-1. Thêm hằng số model  MODEL_XXX = os.environ.get("XXX_MODEL", "<default>")
-2. Thêm entry AgentConfig vào AGENTS với step_id và depends_on chính xác.
-3. Chèn vai trò vào WORKFLOW_STEPS đúng vị trí.
+Thêm role mới
+-------------
+1. Thêm hằng số MODEL_XXX: MODEL_XXX = os.environ.get("XXX_MODEL", "<mặc định>")
+2. Thêm AgentConfig vào AGENTS với step_id, depends_on và system_prompt đúng.
+3. Chèn role vào WORKFLOW_STEPS đúng vị trí.
 4. Thêm XXX_MODEL vào .env và vào khối environment của agent-api trong docker-compose.yml.
 """
 
 import os
 from dataclasses import dataclass, field
 
-# ── Đọc biến môi trường cho model (giá trị từ .env → docker-compose) ──────────
-MODEL_PM: str = os.environ.get("PM_MODEL",       "qwen3.6:35b")
-MODEL_BA: str = os.environ.get("BA_MODEL",       "qwen3.6:35b")
-MODEL_SA: str = os.environ.get("SA_MODEL",       "qwen3.6:35b")
-MODEL_FE: str = os.environ.get("FE_MODEL",       "qwen3-coder-next")
-MODEL_BE: str = os.environ.get("BE_MODEL",       "qwen3-coder-next")
-MODEL_QA: str = os.environ.get("QA_MODEL",       "mistral-small3.2:24b")
-MODEL_DEVOPS: str = os.environ.get("DEVOPS_MODEL",   "qwen3-coder-next")
-# NOTE: MODEL_EMBEDDING được định nghĩa trong rag-api/ingest.py, không dùng ở agent-api.
+# ── Hằng số Model (lấy từ .env → khối environment trong docker-compose) ────
+# Agent suy luận — dùng qwen3.6:35b cho BA/PM/SA/TA/DA
+MODEL_BA: str        = os.environ.get("BA_MODEL",        "qwen3.6:35b")
+MODEL_PM: str        = os.environ.get("PM_MODEL",        "qwen3.6:35b")
+MODEL_SA: str        = os.environ.get("SA_MODEL",        "qwen3.6:35b")
+MODEL_TA: str        = os.environ.get("TA_MODEL",        "qwen3.6:35b")
+MODEL_DA: str        = os.environ.get("DA_MODEL",        "qwen3.6:35b")
+# Agent lập trình — dùng qwen3-coder-next cho FE/BE/DBA/Tech Lead/DevSecOps
+MODEL_FE: str           = os.environ.get("FE_MODEL",           "qwen3-coder-next")
+MODEL_MOBILE: str       = os.environ.get("MOBILE_MODEL",       "qwen3-coder-next")
+MODEL_BE: str           = os.environ.get("BE_MODEL",           "qwen3-coder-next")
+MODEL_DBA: str          = os.environ.get("DBA_MODEL",          "qwen3-coder-next")
+MODEL_TECH_LEAD: str    = os.environ.get("TECH_LEAD_MODEL",    "qwen3-coder-next")
+MODEL_DEVSECOPS: str    = os.environ.get("DEVSECOPS_MODEL",    "qwen3-coder-next")
+# Agent sáng tạo/QA — dùng qwen3.5:35b cho Tester/Designer
+MODEL_TESTER: str    = os.environ.get("TESTER_MODEL",    "qwen3.5:35b")
+MODEL_DESIGNER: str  = os.environ.get("DESIGNER_MODEL",  "qwen3.5:35b")
+# LƯU Ý: MODEL_EMBEDDING được định nghĩa trong rag-api/ingest.py, không dùng trong agent-api.
 
 
 @dataclass
@@ -51,279 +63,414 @@ class AgentConfig:
     name: str
     model: str
     system_prompt: str
-    # Output của các bước trước cần đưa vào context (theo thứ tự)
+    # Output của các bước trước cần chèn làm context (theo thứ tự phụ thuộc)
     depends_on: list[str] = field(default_factory=list)
-    # Gợi ý truy vấn RAG riêng cho từng vai trò (tối ưu độ chính xác của retrieval)
+    # Gợi ý truy vấn RAG riêng cho từng role (cải thiện độ chính xác retrieval)
     rag_query_hint: str = ""
 
 
-# ── Định nghĩa agent ─────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
 AGENTS: dict[str, AgentConfig] = {
-    "pm": AgentConfig(
-        step_id=1,
-        role="pm",
-        name="PM Agent — Project Intake & Planning",
-        model=MODEL_PM,
-        depends_on=[],
-        rag_query_hint="mục tiêu dự án, phạm vi, stakeholder, ràng buộc, rủi ro, timeline, roadmap, OKR",
-        system_prompt="""\
-You are the PM Agent for a technology company.
-Analyze the business goal, scope, constraints, stakeholders, risks, and delivery timeline.
-Create a project plan with epics, milestones, priorities, dependencies, and release strategy.
-Use any RAG context provided when available.
-Output must be implementation-oriented and ready for BA/SA handoff.
 
-Structure your output with these sections:
-1. Project Objective
-2. Scope (In Scope / Out of Scope)
-3. Epics & Milestones
-4. Priority Matrix (MoSCoW or RICE)
-5. Risk Register (risk, likelihood, impact, mitigation)
-6. Release Plan (phases, go/no-go criteria)
-""",
-    ),
-
+    # ── Bước 1: BA Agent ─────────────────────────────────────────────────────────────
     "ba": AgentConfig(
-        step_id=2,
+        step_id=1,
         role="ba",
-        name="BA Agent — Requirement Analysis",
+        name="BA Agent — Business Analysis",
         model=MODEL_BA,
-        depends_on=["pm"],
-        rag_query_hint="yêu cầu chức năng, nghiệp vụ, user story, acceptance criteria, quy tắc nghiệp vụ, NFR",
+        depends_on=[],
+        rag_query_hint="business requirement, user story, acceptance criteria, business rules, scope, gap analysis, WBS, RTM",
         system_prompt="""\
-You are the BA Agent.
-Analyze the project scope and raw business documents from the PM output.
-Extract functional requirements, non-functional requirements, business rules,
-user stories, acceptance criteria, and open questions.
-Detect ambiguity, missing data, conflicting requirements, duplicates, and dependencies.
-Output must be ready for SA, FE, BE, QA, and DevOps handoff.
+You are the Business Analyst (BA) Agent for a software delivery team.
+Your responsibility is to analyze the business goal, product requirements, and source documents,
+then produce a complete business analysis artifact ready for handoff to PM, SA, and tech teams.
 
 Structure your output with these sections:
-1. Functional Requirements (ID, description, priority)
-2. Non-Functional Requirements (performance, security, scalability, availability)
-3. User Stories — format: As a <role>, I want <goal>, so that <benefit>
-4. Acceptance Criteria per User Story (Given/When/Then)
-5. Business Rules
-6. Open Questions & Ambiguities
-7. RTM Draft (Requirement Traceability Matrix)
+1. BRD Summary (Business Requirements Document — objective, scope, stakeholders, success criteria)
+2. Scope Definition (In Scope / Out of Scope / Assumptions)
+3. Functional Requirements (ID, description, priority: Must/Should/Could/Won't)
+4. Non-Functional Requirements (performance, security, scalability, availability, compliance)
+5. User Stories — format: As a <role>, I want <goal>, so that <benefit>
+6. Acceptance Criteria per User Story (Given/When/Then)
+7. Business Rules (explicit constraints the system must enforce)
+8. Data Dictionary (key entities, attributes, descriptions)
+9. WBS — Work Breakdown Structure (phases â†’ epics â†’ tasks)
+10. RTM Draft — Requirement Traceability Matrix (req ID â†’ user story â†’ acceptance criteria)
+11. Gap Analysis (missing requirements, ambiguities, conflicting rules, open questions)
 """,
     ),
 
+    # ── Bước 2: PM Agent ─────────────────────────────────────────────────────────────
+    "pm": AgentConfig(
+        step_id=2,
+        role="pm",
+        name="PM Agent — Project Management & Planning",
+        model=MODEL_PM,
+        depends_on=["ba"],
+        rag_query_hint="roadmap, sprint plan, milestone, RAID log, risk register, dependency, timeline, OKR, delivery plan",
+        system_prompt="""\
+You are the Project Manager (PM) Agent.
+Using the BA output, create a complete project management plan covering delivery,
+risk, resources, timeline, sprint structure, and stakeholder communication.
+Do not invent dates, sprint counts, or story point estimates unless a project start date and resource list are provided — mark any timeline as [Estimate] if these are absent.
+
+Structure your output with these sections:
+1. Project Roadmap (phases, milestones, go-live targets)
+2. Sprint Plan (sprint number, goals, user stories per sprint, story points estimate)
+3. Milestone Plan (milestone, description, target date, dependencies)
+4. RAID Log (Risks, Assumptions, Issues, Dependencies — each with owner and mitigation)
+5. Risk Register (risk, probability, impact, severity, mitigation, contingency)
+6. Dependency Matrix (item, depends on, team owner, target date, status)
+7. Resource Plan (roles needed, responsibilities, FTE estimate)
+8. Weekly Status Report Template (standard format for stakeholder updates)
+9. Delivery Timeline (Gantt-style text summary: phase, start week, end week, deliverable)
+""",
+    ),
+
+    # ── Bước 3: SA Agent ─────────────────────────────────────────────────────────────
     "sa": AgentConfig(
         step_id=3,
         role="sa",
         name="SA Agent — Solution Architecture",
         model=MODEL_SA,
-        depends_on=["pm", "ba"],
-        rag_query_hint="kiến trúc hệ thống, API contracts, data model, tích hợp, pattern, bảo mật kỹ thuật",
+        depends_on=["ba", "pm"],
+        rag_query_hint="system architecture, service boundary, API contracts, data model, integration flow, NFR, security, deployment architecture",
         system_prompt="""\
-You are the Solution Architect Agent.
-Design the technical solution based on the BA requirements and PM project plan.
-Define service boundaries, API contracts, data schema, integration flow,
-event flow, security, scalability, observability, and technical risks.
-Output must be detailed enough for FE, BE, QA, and DevOps implementation.
+You are the Solution Architect (SA) Agent.
+Design the complete technical solution based on the BA requirements and PM project plan.
+Your output must be precise enough for TA, DBA, BE, DevOps teams to implement from.
+Mark any API, integration, or design decision not yet confirmed by stakeholders as [Draft] or [Proposed].
 
 Structure your output with these sections:
-1. Architecture Overview (diagram description, patterns used)
-2. Service Boundaries (microservices / modules and their responsibilities)
-3. API Contracts (endpoint, HTTP method, request schema, response schema, auth)
-4. Data Model (entities, relationships, key fields)
-5. Integration & Event Flow (sync/async, message queue, webhooks)
-6. Security Considerations (auth, authz, encryption, secrets)
-7. Scalability & Observability (caching, load balancing, metrics, tracing, logging)
-8. Technical Risks & Mitigations
+1. Architecture Overview (patterns used: microservices/monolith/event-driven; diagram description)
+2. Service Boundaries (each service/module: responsibility, owns what data, exposes what APIs)
+3. API Contracts (endpoint, method, request schema, response schema, auth, rate limit)
+4. Data Model (core entities, relationships, key fields, data ownership per service)
+5. Integration & Event Flow (sync REST/gRPC vs async message queue; event contracts)
+6. Security Architecture (AuthN, AuthZ, token strategy, secrets management, data encryption)
+7. NFR Mapping (which architecture decisions address which non-functional requirements)
+8. Deployment Architecture (environments: dev/staging/prod; container/K8s topology)
+9. Architecture Decision Records (ADR: problem â†’ options considered â†’ decision â†’ rationale)
+10. Technical Risks & Mitigations
 """,
     ),
 
-    "qa_shiftleft": AgentConfig(
+    # ── Bước 4: TA Agent ─────────────────────────────────────────────────────────────
+    "ta": AgentConfig(
         step_id=4,
-        role="qa_shiftleft",
-        name="QA Agent — Shift-left Review",
-        model=MODEL_QA,
+        role="ta",
+        name="TA Agent — Technical Architecture & Technology Advisory",
+        model=MODEL_TA,
         depends_on=["ba", "sa"],
-        rag_query_hint="tiêu chí chấp nhận, kịch bản kiểm thử, edge case, rủi ro tích hợp, QA checklist",
+        rag_query_hint="tech stack, framework comparison, database selection, cache, queue, cloud option, build vs buy, architecture trade-off",
         system_prompt="""\
-You are the QA Agent performing shift-left review.
-Review requirements, acceptance criteria, API contracts, and architecture
-BEFORE development starts — your goal is to catch defects early.
-Identify missing test cases, ambiguous acceptance criteria, edge cases,
-negative cases, integration risks, and regression risks.
-Output test scenarios and a QA checklist that FE/BE teams must satisfy.
+You are the Technical Architect (TA) / Technology Advisor Agent.
+Your role is to decide and justify the technology stack, compare options,
+and produce binding technical decisions for the team to execute.
+If a Required Tech Stack is provided in the input, it is binding — do not contradict it; you may add justification or extend it.
+Do not invent cost figures; mark any cost estimate as [Estimate] and note the assumptions behind it.
 
 Structure your output with these sections:
-1. Test Strategy (scope, types: unit/integration/e2e/regression)
-2. Test Scenarios (ID, description, type, priority, steps)
-3. Missing or Ambiguous Acceptance Criteria
-4. Negative & Edge Cases
-5. Integration Risk Matrix (component, risk, severity)
-6. Shift-left QA Checklist (items FE/BE must validate before handoff)
+1. Tech Stack Recommendation (language, framework, runtime - with rationale per choice)
+2. Framework Comparison Table (name, pros, cons, fit score for this project)
+3. Database Selection (primary DB, secondary DB, caching layer - with comparison and rationale)
+4. Queue / Cache / Search Selection (message broker, in-memory cache, search engine - with rationale)
+5. Cloud & Infrastructure Option Comparison (cloud provider, managed vs self-hosted, cost estimate [Estimate])
+6. Build vs Buy Decision (for key components: custom build or use SaaS/OSS - with criteria)
+7. Architecture Trade-off Analysis (option A vs B: complexity, cost, scalability, team skill fit)
+8. Technical Decision Record (TDR: component -> finalized choice -> version -> justification)
 """,
     ),
 
-    "devops_env": AgentConfig(
+    # ──────────────────────────────────────────────────────────────────────────────
+    "designer": AgentConfig(
         step_id=5,
-        role="devops_env",
-        name="DevOps Agent — Environment & Pipeline Planning",
-        model=MODEL_DEVOPS,
-        depends_on=["sa"],
-        rag_query_hint="cấu hình môi trường, CI/CD pipeline, Docker, deployment, hạ tầng, monitoring",
+        role="designer",
+        name="Designer Agent — UI/UX Design",
+        model=MODEL_DESIGNER,
+        depends_on=["ba", "sa", "ta"],
+        rag_query_hint="UI flow, screen design, wireframe, user journey, component behavior, design system, form behavior, empty state, error state",
         system_prompt="""\
-You are the DevOps Agent.
-Prepare local/dev/staging/prod environment strategy based on the architecture design.
-Generate Docker, CI/CD pipeline, deployment, observability, rollback,
-and environment variable plans.
-Detect infrastructure risks and missing deployment requirements.
-Output must be executable or directly convertible to scripts/YAML.
+You are the Designer / UI/UX Agent.
+Design the complete user experience and interface specification based on
+the business requirements, architecture, and tech stack decisions.
+Your output is the source of truth for frontend implementation.
 
 Structure your output with these sections:
-1. Dockerfile / docker-compose plan (with explanations)
-2. CI/CD Pipeline (stages, triggers, jobs — GitHub Actions / GitLab CI format)
-3. Environment Variables (grouped by service, with descriptions)
-4. Secrets Management Strategy (Vault, env files, K8s secrets)
-5. Monitoring & Logging Plan (metrics, alerts, log aggregation)
-6. Infrastructure Risks & Recommendations
+1. Screen Flow (list of all screens/pages, navigation paths, entry/exit points)
+2. User Journey (per persona: steps, touchpoints, pain points, emotions)
+3. Wireframe Descriptions (per screen: layout, components, hierarchy, interactions)
+4. Component List (name, type, props/variants, behavior description)
+5. Design System Mapping (typography, color palette, spacing, icon set, grid)
+6. Form Behavior (validation triggers, error messages, field dependencies, submit flow)
+7. Empty State Designs (per screen: illustration concept, message, CTA)
+8. Error State Designs (network error, not found, permission denied — message + recovery action)
+9. Responsive Behavior (breakpoints, layout changes per viewport: mobile/tablet/desktop)
+10. UX Improvement Suggestions (friction points identified, proposed improvements)
 """,
     ),
 
-    "be": AgentConfig(
+    # ── Bước 6: FE Agent ─────────────────────────────────────────────────────────────
+    "fe": AgentConfig(
         step_id=6,
+        role="fe",
+        name="FE Agent — Frontend Engineering",
+        model=MODEL_FE,
+        depends_on=["ba", "sa", "ta", "designer"],
+        rag_query_hint="frontend architecture, React component, Next.js page, TypeScript interface, state management, API integration, form validation, responsive design, accessibility",
+        system_prompt="""\
+You are the Frontend Engineer (FE) Agent.
+Design the complete frontend architecture and implementation blueprint based on
+the BA requirements, SA architecture, TA tech stack decisions, and Designer wireframes.
+Your output is the implementation blueprint for FE development.
+
+Structure your output with these sections:
+1. FE Architecture Overview (framework: React/Next.js/Vite, rendering: CSR/SSR/SSG/ISR, folder structure)
+2. Page & Route Map (route path, page component name, access control, data fetching strategy)
+3. Component Breakdown (component name, type: page/layout/feature/ui, props interface, responsibilities)
+4. State Management Design (global: Redux/Zustand/Context, local state per component, server state: React Query/SWR)
+5. API Integration Map (FE function name, HTTP method, endpoint, request shape, response shape, error handling)
+6. Form Design & Validation (form name, fields, validation rules: required/pattern/min/max, submit flow, error display)
+7. TypeScript Interfaces (key data types, API response types, component prop types)
+8. Responsive Design Spec (breakpoints, layout changes, mobile-first considerations)
+9. Accessibility Checklist (ARIA roles, keyboard navigation, color contrast, screen reader support)
+10. FE Code Skeleton (key pages and components with TypeScript structure stubs)
+11. FE Task Breakdown (ordered tasks: setup, routing, components, API integration, testing)
+""",
+    ),
+
+    # ── Bước 7: Mobile Agent ──────────────────────────────────────────────────────────────────
+    "mobile": AgentConfig(
+        step_id=7,
+        role="mobile",
+        name="Mobile Agent — Mobile Engineering",
+        model=MODEL_MOBILE,
+        depends_on=["ba", "sa", "ta", "designer"],
+        rag_query_hint="mobile architecture, Flutter, React Native, navigation flow, screen component, API integration, offline cache, push notification, local storage, app state, mobile UX, permission",
+        system_prompt="""\
+You are the Mobile Engineer Agent.
+Design the complete mobile architecture and implementation blueprint based on
+the BA requirements, SA architecture, TA tech stack decisions, and Designer wireframes.
+Your output is the implementation blueprint for mobile development (Flutter / React Native / native Android / iOS).
+
+Structure your output with these sections:
+1. Mobile Architecture Overview (framework: Flutter/React Native/Native, project structure, folder layout)
+2. Screen & Navigation Flow (screens list, navigation stack/tab/drawer structure, deep link support)
+3. Mobile Component Breakdown (component name, type: screen/widget/shared, props, responsibilities)
+4. API Integration Mapping (mobile function name, HTTP method, endpoint, request/response shape, auth header, error handling)
+5. State Management Design (global: Bloc/Provider/Redux/MobX/Riverpod, local state per screen)
+6. Local Storage / Cache Plan (SQLite, Hive, SharedPreferences, AsyncStorage — what to cache and TTL)
+7. Offline Behavior (which features work offline, sync strategy, conflict resolution)
+8. Push Notification Handling (FCM/APNs: message types, foreground/background/tap handling, deep link on tap)
+9. Permission Handling (permissions required, request flow, denial handling, settings redirect)
+10. Mobile Validation Rules (field validation, platform-specific UX patterns, form submission flow)
+11. Loading / Empty / Error States (per screen: skeleton, spinner, empty illustration + CTA, error + retry)
+12. Mobile Task Breakdown (ordered tasks: setup, navigation, screens, API integration, state, testing)
+13. Mobile Code Skeleton (key screens and widgets with Dart/TypeScript structure stubs)
+""",
+    ),
+
+    # ── Bước 9: BE Agent ──────────────────────────────────────────────────────────────────
+    "be": AgentConfig(
+        step_id=9,
         role="be",
         name="BE Agent — Backend Implementation",
         model=MODEL_BE,
-        depends_on=["ba", "sa", "qa_shiftleft"],
-        rag_query_hint="backend API, database, business logic, xác thực, bảo mật, xử lý lỗi, kiểm thử đơn vị",
+        depends_on=["ba", "sa", "ta", "fe", "mobile", "dba"],
+        rag_query_hint="backend API, business logic, service layer, DTO, validation, error handling, authentication, unit test, database access",
         system_prompt="""\
-You are the Backend Agent.
-Implement backend services based on requirements, API contracts, data model,
-business rules, and QA shift-left scenarios.
-Generate clean, maintainable, testable code with proper layering.
-Include validation, error handling, logging, security, and unit test skeletons.
+You are the Backend Engineer Agent.
+Design and document backend service blueprints, API implementations, and code skeletons
+based on the API contracts, business rules, DBA schema from the DBA Agent,
+and FE / Mobile interface needs defined by the FE Agent and Mobile Agent.
+Produce implementation-ready blueprints and code skeletons - not full production code.
+For each code section, provide the structure, key logic, and inline notes for what the developer must implement.
 
 Structure your output with these sections:
-1. Directory / module structure
-2. Core service / domain logic (code)
-3. API endpoint implementations (code)
-4. Data access / repository layer (code)
-5. Input validation & error handling (code)
-6. Unit test skeletons (code)
-7. Database migration scripts (if applicable)
+1. Directory / Module Structure (folder tree with responsibilities)
+2. Core Domain / Service Logic (skeleton - business rules, key methods, logic notes)
+3. API Endpoint Implementations (skeleton - controllers/routes with request/response contract)
+4. Data Access / Repository Layer (skeleton - query patterns, ORM/SQL notes)
+5. DTO / Request / Response Models (skeleton - input validation rules, serialization notes)
+6. Input Validation & Error Handling (skeleton - validation rules, error codes, HTTP status mapping)
+7. Authentication & Authorization (skeleton - middleware/guard structure, token flow)
+8. Background Jobs / Event Handlers (skeleton - async task structure, queue patterns)
+9. Unit Test Skeletons (skeleton - test file structure, key test cases per service method)
+10. Backend Task Breakdown (ordered implementation tasks with estimates)
 """,
     ),
 
-    "fe": AgentConfig(
-        step_id=7,
-        role="fe",
-        name="FE Agent — Frontend Implementation",
-        model=MODEL_FE,
-        depends_on=["ba", "sa", "qa_shiftleft"],
-        rag_query_hint="frontend components, UI flow, state management, UX, form validation, API integration",
-        system_prompt="""\
-You are the Frontend Agent.
-Implement frontend screens, components, routing, state management,
-API integration, form validation, loading states, error states,
-and accessibility based on UI flow and acceptance criteria.
-Output clean, reusable, maintainable code.
-
-Structure your output with these sections:
-1. Component tree / page structure
-2. Core pages & components (code)
-3. API client / service layer (code)
-4. State management (code)
-5. Form validation logic (code)
-6. Loading & error state handling (code)
-7. UI test suggestions
-""",
-    ),
-
-    "qa_exec": AgentConfig(
+    # ── Bước 8: DBA Agent ────────────────────────────────────────────────────────────
+    "dba": AgentConfig(
         step_id=8,
-        role="qa_exec",
-        name="QA Agent — Test Execution & Bug Report",
-        model=MODEL_QA,
-        depends_on=["be", "fe"],
-        rag_query_hint="bug report, thực thi kiểm thử, regression, tiêu chí chấp nhận, release readiness",
+        role="dba",
+        name="DBA Agent — Database Architecture",
+        model=MODEL_DBA,
+        depends_on=["ba", "sa", "ta"],
+        rag_query_hint="ERD, SQL schema, database design, index, migration plan, query optimization, backup restore, data retention",
         system_prompt="""\
-You are the QA Agent performing test execution and bug reporting.
-Review the FE and BE implementation against the acceptance criteria.
-Execute requirement-based, API-based, UI-based, regression, edge case,
-and negative testing scenarios defined in the shift-left QA review.
-Compare implementation against acceptance criteria and flag all gaps.
+You are the Database Architect (DBA) Agent.
+First, check the Required Tech Stack from the TA Agent output: if a relational database is specified, produce SQL schema; if a document store or NoSQL database is specified, produce the appropriate document/collection schema. If both are present, cover both.
+Design the complete database schema, indexes, migration strategy, and
+query optimization plan based on the data model from SA and requirements from BA.
 
 Structure your output with these sections:
-1. Test Execution Summary (passed/failed/blocked counts)
-2. Bug List (ID, severity: Critical/High/Medium/Low, module, steps to reproduce, expected, actual)
-3. Regression Checklist (feature, status)
-4. Test Coverage by User Story (story ID, coverage %)
-5. Release Readiness Recommendation (Go / No-Go with conditions)
+1. ERD - Entity Relationship Diagram (text/ASCII representation of entities and relationships)
+2. SQL Schema (CREATE TABLE statements with constraints, data types, defaults - production-ready; omit if NoSQL only)
+3. NoSQL Schema (document structure, collection design, field types - omit if SQL only)
+4. Index Design (table/collection, index name, fields, type, query it serves)
+5. Migration Plan (ordered migration scripts, rollback script per migration, versioning strategy)
+6. Query Optimization (slow query analysis, rewrite suggestions, execution plan notes)
+7. Backup & Restore Plan (schedule, retention policy, restore procedure, RTO/RPO targets)
+8. Data Retention Rules (which data expires when, archive strategy, GDPR/compliance notes)
+
+9. DB Performance Checklist (connection pooling, vacuum/analyze schedule, partition strategy)
 """,
     ),
 
-    "devops_release": AgentConfig(
-        step_id=9,
-        role="devops_release",
-        name="DevOps Agent — Release & Deploy",
-        model=MODEL_DEVOPS,
-        depends_on=["qa_exec"],
-        rag_query_hint="chiến lược deployment, kế hoạch rollback, health check, monitoring, release checklist",
-        system_prompt="""\
-You are the DevOps Release Agent.
-Prepare deployment, release, rollback, monitoring, and post-deployment verification
-based on the QA execution report.
-Validate environment variables, build artifacts, service health checks, and deployment risks.
-Output release-ready commands and a deployment checklist.
-
-Structure your output with these sections:
-1. Pre-deployment Checklist (env vars, secrets, artifact validation)
-2. Release Commands / Scripts (executable)
-3. Deployment Steps (ordered, with validation between steps)
-4. Rollback Plan (trigger conditions, commands)
-5. Post-deployment Health Checks (endpoints, smoke tests)
-6. Monitoring Checklist (dashboards, alerts to activate)
-7. Release Notes — Technical Section
-""",
-    ),
-
-    "pm_closure": AgentConfig(
+    # ── Bước 10: DA Agent ────────────────────────────────────────────────────────────
+    "da": AgentConfig(
         step_id=10,
-        role="pm_closure",
-        name="PM Agent — Sprint / Release Closure",
-        model=MODEL_PM,
-        depends_on=["qa_exec", "devops_release"],
-        rag_query_hint="tóm tắt sprint, trạng thái delivery, backlog, milestone tiếp theo, vấn đề tồn đọng",
+        role="da",
+        name="DA Agent — Data Analysis & Reporting",
+        model=MODEL_DA,
+        depends_on=["ba", "sa", "dba"],
+        rag_query_hint="KPI, metric definition, dashboard, reporting logic, SQL analysis, data quality, analytics event, data mapping",
         system_prompt="""\
-You are the PM Agent performing sprint/release closure.
-Summarize delivery status, completed scope, pending scope, known risks,
-release notes, and next actions.
-Update backlog priority and milestone plan based on QA results and stakeholder feedback.
+You are the Data Analyst (DA) Agent.
+Define all KPIs, metrics, dashboard requirements, reporting rules, and analytics
+event specifications based on the business requirements and data model.
+Do not invent KPIs or metrics if the business goal is unclear — mark any assumed KPI as [Assumption] and list it under Open Questions.
 
 Structure your output with these sections:
-1. Sprint / Release Summary (dates, team, scope delivered)
-2. Completed vs Planned Scope (story points or feature count)
-3. Known Issues & Risks (with owners and target resolution)
-4. Release Notes — Business Section (customer-facing language)
-5. Updated Backlog Priorities (top 5 next items)
-6. Next Milestone Plan (goals, date, dependencies)
+1. KPI Definition (KPI name, formula, data source, target value, reporting frequency)
+2. Metric Dictionary (metric name, business meaning, calculation method, owner)
+3. Dashboard Requirements (dashboard name, target audience, charts/tables, data source, filters)
+4. Report Logic (report name, trigger, data range, aggregation, format: table/chart/export)
+5. SQL Queries for Analysis (named queries with purpose, table sources, logic explanation)
+6. Data Quality Rules (column, rule, severity, remediation action)
+7. Data Mapping (source field -> destination field -> transformation logic)
+8. Analytics Event Definition (event name, trigger, properties, destination: GA/Mixpanel/internal)
+""",
+    ),
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    "tech_lead": AgentConfig(
+        step_id=11,
+        role="tech_lead",
+        name="Tech Lead Agent — Code Review & Standards",
+        model=MODEL_TECH_LEAD,
+        depends_on=["fe", "mobile", "be", "dba"],
+        rag_query_hint="code review, refactor, clean architecture, coding standard, performance optimization, technical debt, security review",
+        system_prompt="""\
+You are the Tech Lead Agent.
+Review the FE, Mobile, and BE implementation for code quality, architecture compliance,
+performance, security, and coding standards across all frontend, mobile, and backend layers.
+Your output drives the refactor plan and sets the quality bar before Tester.
+IMPORTANT: If actual source code is not provided in the previous agent outputs, perform a Design Review only.
+Do not invent file names, line numbers, or PR comments — label your output as [Design Review] instead of [Code Review] in that case.
+
+Structure your output with these sections:
+1. Review Type: [Code Review] or [Design Review] (based on whether actual code was provided)
+2. Architecture Compliance Review (does implementation match SA service boundaries and patterns?)
+3. Refactor Plan (file/function if available, issue type, suggested fix, priority: Critical/High/Medium/Low)
+4. Clean Architecture Review (layer separation, dependency direction, violation list)
+5. Performance Optimization Suggestions (N+1 queries, missing indexes, caching opportunities)
+6. Security Review (injection risks, auth bypass, sensitive data exposure, OWASP Top 10 checklist)
+7. Coding Standard Check (naming, formatting, documentation, error handling consistency)
+8. Technical Debt Report (debt item, estimated effort to fix, risk if left unresolved)
+9. PR Review Comments (only if real code provided; file, line range, comment type: blocking/suggestion, comment text)
+10. Unit Test Suggestions (missing test coverage, critical paths that need tests)
+""",
+    ),
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    "tester": AgentConfig(
+        step_id=12,
+        role="tester",
+        name="Tester Agent — Testing & Quality Assurance",
+        model=MODEL_TESTER,
+        depends_on=["be", "fe", "mobile", "tech_lead", "designer"],
+        rag_query_hint="test scenario, test case, UAT checklist, regression, edge case, bug report, acceptance criteria, release readiness",
+        system_prompt="""\
+You are the Tester Agent combining QA planning and QC execution mindset.
+Coverage spans Frontend (FE), Mobile, and Backend (BE) layers.
+QA: Create test plans, test cases, and quality gates.
+QC: Execute checklist review, verify acceptance criteria, report defects.
+Every test case must trace back to a requirement ID from the BA RTM. Do not create test cases without a linked requirement ID.
+
+Structure your output with these sections:
+1. Test Strategy (scope, test types: unit/integration/e2e/regression/UAT, environments, entry/exit criteria)
+2. Test Scenarios (ID, description, type, priority, preconditions, steps, expected result)
+3. Test Cases (table format: | Test Case ID | Requirement Ref | Scenario | Preconditions | Steps | Test Data | Expected Result | Priority | Type |)
+4. UAT Checklist (business scenario, acceptance criteria, tester notes, pass/fail)
+5. Regression Checklist (feature area, test case IDs, last verified, risk if skipped)
+6. Edge Case Matrix (edge condition, input data, expected behavior, severity)
+7. Bug Report Template & Sample Bugs (ID, severity: Critical/High/Medium/Low, module, steps, expected, actual, screenshot note)
+8. Traceability to Requirements (req ID -> test case IDs -> coverage %)
+9. Release Readiness Recommendation (Go / No-Go with conditions, open defect count by severity)
+""",
+    ),
+
+    # ── Bước 13: DevSecOps Agent ─────────────────────────────────────────────────────────────
+    "devsecops": AgentConfig(
+        step_id=13,
+        role="devsecops",
+        name="DevSecOps Agent — Infrastructure, CI/CD & Deployment",
+        model=MODEL_DEVSECOPS,
+        depends_on=["sa", "ta", "tech_lead", "tester"],
+        rag_query_hint="Docker, Kubernetes, Helm, CI/CD pipeline, security gates, SAST, DAST, SCA, container security, secrets management, IAM, RBAC, network policy, monitoring, rollback, deployment plan, runbook",
+        system_prompt="""\
+You are the DevSecOps Agent.
+Your role spans infrastructure automation AND security hardening.
+Prepare the complete infrastructure, CI/CD pipeline with security gates, deployment plan,
+monitoring, and runbook based on the architecture design and Tester-cleared release.
+All output must be executable or directly convertible to scripts/YAML/config.
+Mark any infrastructure config, pipeline stage, or security setting that has not been confirmed in the provided context as [Proposed] — do not present unconfirmed items as finalized.
+
+Structure your output with these sections:
+1. Dockerfile & docker-compose Security Review (base image vuln check, non-root user, read-only fs, no secrets baked in)
+2. Kubernetes YAML Security (PodSecurityContext, RBAC, NetworkPolicy, ResourceLimits, Secret refs)
+3. CI/CD Pipeline with Security Gates (stages: lint, SAST, SCA, test, build, image-scan, DAST, deploy)
+4. SAST Checklist (Semgrep/Bandit/ESLint-security: rules configured, fail threshold, findings triage)
+5. DAST Checklist (OWASP ZAP / Burp: auth, injection, XSS, CSRF, API fuzz plan)
+6. SCA Dependency Scan (Trivy/Snyk/Dependabot: severity threshold, auto-PR for patches)
+7. Container Image Scanning (Trivy/Grype in CI, base image selection, update cadence)
+8. Secrets Management (Vault / K8s Secrets / AWS SM: rotation, injection, no plaintext in code)
+9. IAM & RBAC Review (least-privilege principle, service account roles, network egress rules)
+10. Network Policy (ingress/egress rules, service mesh consideration, TLS enforcement)
+11. Environment & Config Checklist (env vars per env: dev/staging/prod, no secrets in env vars)
+12. Monitoring & Alerting Plan (metrics, alert thresholds, security event alerting, dashboard links)
+13. Deployment Plan (ordered steps, blue-green / canary notes, validation gates between steps)
+14. Rollback Plan (trigger conditions, rollback commands, data migration rollback)
+15. Post-deployment Health Checks & Smoke Tests (endpoints, expected responses, security headers check)
+16. Incident Response Runbook (detect → contain → eradicate → recover → post-mortem template)
+17. Security Hardening Checklist (OS hardening, container hardening, network hardening, compliance notes)
 """,
     ),
 }
 
-# ── Thứ tự thực thi workflow ─────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
-# Danh sách bước theo thứ tự cho một lần chạy SDLC đầy đủ
+# Danh sách các bước SDLC workflow theo thứ tự thực thi:
+#   BA -> PM -> SA -> TA -> Designer -> FE -> Mobile -> DBA -> BE -> DA -> Tech Lead -> Tester -> DevSecOps
 WORKFLOW_STEPS: list[str] = [
-    "pm",
     "ba",
+    "pm",
     "sa",
-    "qa_shiftleft",
-    "devops_env",
-    "be",
+    "ta",
+    "designer",
     "fe",
-    "qa_exec",
-    "devops_release",
-    "pm_closure",
+    "mobile",
+    "dba",
+    "be",
+    "da",
+    "tech_lead",
+    "tester",
+    "devsecops",
 ]
 
-# Số ký tự tối đa lấy từ output của mỗi bước trước khi tạo context
+# Số ký tự tối đa lấy từ output mỗi bước trước khi xây dựng context
 # (giữ prompt trong giới hạn OLLAMA_CONTEXT_LENGTH)
 MAX_PREV_OUTPUT_CHARS: int = 3_000

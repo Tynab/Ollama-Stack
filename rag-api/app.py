@@ -53,6 +53,10 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 
+# Tắt spam thông báo schema Neo4j (cảnh báo MENTIONS/Entity chưa tồn tại).
+# Xuất hiện mỗi lần gọi /ask khi đồ thị chưa được khởi tạo.
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
+
 logger = logging.getLogger("rag-api")
 
 # ── Module Graph (tùy chọn — giảm cấp nhẹ nhàng nếu Neo4j không khả dụng) ────────
@@ -70,7 +74,7 @@ EMBEDDING_MODEL = _require_env("EMBEDDING_MODEL")
 CHAT_MODEL = _require_env("CHAT_MODEL")
 RAG_TOP_K = int(_require_env("RAG_TOP_K"))
 # Timeout (giây) cho mỗi lần gọi Ollama từ rag-api. Phải >= RAG_TIMEOUT của agent-api.
-OLLAMA_REQUEST_TIMEOUT: float = float(os.environ.get("OLLAMA_REQUEST_TIMEOUT", "300"))
+OLLAMA_REQUEST_TIMEOUT: float = float(os.environ.get("OLLAMA_REQUEST_TIMEOUT", "600"))
 
 app = FastAPI(title="YAN Local RAG API", version="1.0.0")
 

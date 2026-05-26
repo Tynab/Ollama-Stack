@@ -230,7 +230,7 @@ def delete_project_graph(project: str) -> None:
         )
         session.run(
             "MATCH (d:Document {project: $p}) DETACH DELETE d", p=project)
-        # Clean orphan entities (no longer mentioned by any chunk in this project)
+        # Xóa entity mồ côi (không còn được đề cập bởi bất kỳ chunk nào trong project)
         session.run(
             """
             MATCH (e:Entity {project: $p})
