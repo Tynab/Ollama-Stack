@@ -140,6 +140,16 @@ def _truncate(text: str, max_chars: int = MAX_PREV_OUTPUT_CHARS) -> str:
     return text[:max_chars]
 
 
+# Models that emit <think>...</think> chain-of-thought blocks — stripped from output.
+_REASONING_MODELS: frozenset[str] = frozenset({"phi4-mini-reasoning", "phi4-reasoning", "qwq", "deepseek-r1"})
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <think>...</think> blocks emitted by reasoning models."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
+
+
 def _get_num_ctx(model: str) -> int:
     """Trả về num_ctx phù hợp với model. codegemma:2b chỉ hỗ trợ đến 8 192 tokens."""
     if "codegemma:2b" in model.lower():
@@ -184,12 +194,7 @@ Purpose: {description}
 Tech stack: {tech_stack}
 {extra}
 
-Output rules:
-- Output ONLY a single code block using triple backticks with language identifier
-- Do NOT include author/date/version/license/copyright comment headers
-- Do NOT repeat the same import statement more than once
-- Write real working implementation code, not empty stubs or metadata-only headers
-- Keep the file focused (ideally under 80 lines)
+Respond with one triple-backtick code block containing the full working implementation.
 """
 
 
@@ -408,6 +413,10 @@ def _call_agent(
     response = llm.invoke(messages)
     result   = str(response.content)
 
+    # Strip chain-of-thought blocks from reasoning models (phi4-mini-reasoning etc.)
+    if any(m in agent.model.lower() for m in _REASONING_MODELS):
+        result = _strip_thinking(result)
+
     if len(result.strip()) < 30:
         logger.warning(
             "Agent '%s' (model=%s) trả về output rất ngắn (%d chars) — retry với context rút gọn.",
@@ -419,6 +428,8 @@ def _call_agent(
             HumanMessage(content=trimmed),
         ])
         result = str(response.content)
+        if any(m in agent.model.lower() for m in _REASONING_MODELS):
+            result = _strip_thinking(result)
 
     return result
 
