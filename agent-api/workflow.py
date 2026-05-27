@@ -29,9 +29,12 @@ Concurrency
   dù nhiều request đến đồng thời.
 """
 
+import json as _json
 import logging
 import os
+import re
 import threading
+from datetime import datetime
 from typing import Annotated, TypedDict
 import operator
 
@@ -52,6 +55,16 @@ OLLAMA_NUM_CTX: int = int(os.environ.get("OLLAMA_CONTEXT_LENGTH", "32768"))
 # Timeout (giây) cho mỗi lần gọi RAG /ask.
 # 600s để xử lý việc Ollama hoán đổi model (qwen3 ↔ qwen2.5-coder) giữa các bước.
 RAG_TIMEOUT: int = int(os.environ.get("RAG_TIMEOUT", "600"))
+# Timeout (giây) cho mỗi lần gọi Ollama LLM.
+OLLAMA_REQUEST_TIMEOUT: int = int(os.environ.get("OLLAMA_REQUEST_TIMEOUT", "1200"))
+
+# Model dùng để lập kế hoạch danh sách file (chat model, không phải code-completion model).
+CODING_PLANNER_MODEL: str = os.environ.get(
+    "CODING_PLANNER_MODEL",
+    os.environ.get("BA_MODEL", "granite3.3:2b"),
+)
+# Số file tối đa mỗi role trong vòng lặp per-file.
+_MAX_FILES_PER_ROLE: int = int(os.environ.get("MAX_FILES_PER_ROLE", "6"))
 
 
 # ── Quy tắc chung được chèn vào system prompt của mọi agent ─────────────────
@@ -70,6 +83,7 @@ Critical rules — apply to every response:
 7. Prefer concise Markdown tables for implementation-ready outputs.
 8. If sources are available in RAG context, reference the source file name in a Notes/Source column.
 9. If actual source code is not provided, clearly label your output as Design Review, not Code Review. Do not invent file names, line numbers, or PR comments.
+10. Complete sections in order. If context budget is exhausted before all sections are done, mark remaining sections as [Deferred — insufficient input] and stop cleanly. Do not produce partial sentences or half-filled tables.
 """
 
 
@@ -120,9 +134,253 @@ def _query_rag(rag_api_url: str, question: str, project: str | None, top_k: int)
 
 
 def _truncate(text: str, max_chars: int = MAX_PREV_OUTPUT_CHARS) -> str:
+    """Cắt ngắn text im lặng — không thêm marker để tránh LLM tái tạo marker đó."""
     if len(text) <= max_chars:
         return text
-    return text[:max_chars] + f"\n\n[... truncated at {max_chars} chars ...]"
+    return text[:max_chars]
+
+
+def _get_num_ctx(model: str) -> int:
+    """Trả về num_ctx phù hợp với model. codegemma:2b chỉ hỗ trợ đến 8 192 tokens."""
+    if "codegemma:2b" in model.lower():
+        return min(4096, OLLAMA_NUM_CTX)
+    return OLLAMA_NUM_CTX
+
+
+# Giới hạn chars tối đa MỖI dep output theo role (để tránh overflow context window)
+_PER_DEP_CHARS: dict[str, int] = {
+    "tech_lead": 800,    # 5 deps × 800 = 4 000 chars ≈ 1 000 tokens
+    "devsecops": 1_000,  # 4 deps × 1 000 = 4 000 chars ≈ 1 000 tokens
+    "tester":    2_000,  # 5 deps × 2 000 = 10 000 chars ≈ 2 500 tokens
+}
+
+
+# Roles sinh code/config theo từng file riêng biệt (loop-per-file approach).
+# Không inject _FILE_OUTPUT_INSTRUCTION nữa vì codegemma:2b echo template verbatim.
+_ARTIFACT_ROLES: frozenset[str] = frozenset(
+    {"fe", "mobile", "be", "dba", "devsecops", "tech_lead"}
+)
+
+# Template prompt cho bước lập kế hoạch file
+_PLAN_PROMPT_TMPL = """\
+You are a {role_name}. Based on the task and tech stack, list the source code / config files you will create.
+Return ONLY a JSON array (no prose, no markdown wrapper):
+[{{"filename": "src/components/Login.tsx", "description": "Login form component", "language": "typescript"}}]
+Rules:
+- Max {max_files} files. Prioritize the most critical files for this role.
+- Use relative paths from project root.
+- "language" must be a valid code fence name (typescript, python, yaml, sql, dockerfile, etc).
+{extra}
+Task: {user_input}
+Tech stack: {tech_stack}
+Context summary:
+{context_summary}
+"""
+
+# Template prompt cho từng file
+_FILE_GEN_PROMPT_TMPL = """\
+Write the complete {language} source code for: {filename}
+Purpose: {description}
+Tech stack: {tech_stack}
+{extra}
+
+Output rules:
+- Output ONLY a single code block using triple backticks with language identifier
+- Do NOT include author/date/version/license/copyright comment headers
+- Do NOT repeat the same import statement more than once
+- Write real working implementation code, not empty stubs or metadata-only headers
+- Keep the file focused (ideally under 80 lines)
+"""
+
+
+def _detect_db_type(tech_stack: list[str] | None) -> str:
+    """Detect DB paradigm. Returns 'nosql', 'sql', 'both', or 'unknown'."""
+    if not tech_stack:
+        return "unknown"
+    _nosql_kw = {"mongodb", "mongo", "nosql", "dynamodb", "cassandra",
+                 "redis", "firestore", "couchdb", "elasticsearch"}
+    _sql_kw   = {"postgresql", "mysql", "postgres", "sql server",
+                 "sqlite", "mssql", "oracle", "mariadb"}
+    combined  = " ".join(t.lower() for t in tech_stack)
+    has_nosql = any(kw in combined for kw in _nosql_kw)
+    has_sql   = any(kw in combined for kw in _sql_kw)
+    if has_nosql and has_sql:
+        return "both"
+    if has_nosql:
+        return "nosql"
+    if has_sql:
+        return "sql"
+    return "unknown"
+
+
+def _strip_code_fence(content: str, language: str) -> str:
+    """Remove outer code-fence markers so nested fences don't break markdown/regex."""
+    # Try to extract content between ```lang ... ```
+    patterns = [
+        rf"```(?:{re.escape(language)}|{re.escape(language.lower())})\s*\n(.*?)(?:\n```\s*$|\n```\s*\Z)",
+        r"```\w*\s*\n(.*?)(?:\n```\s*$|\n```\s*\Z)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, content, re.DOTALL | re.IGNORECASE | re.MULTILINE)
+        if m:
+            return m.group(1).rstrip()
+    # Fallback: strip leading/trailing fence lines
+    lines = content.strip().splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _deloop(text: str, max_repeats: int = 8) -> str:
+    """Truncate infinitely-repeated identical lines (codegemma:2b loop bug)."""
+    lines = text.split("\n")
+    out: list[str] = []
+    prev: str | None = None
+    count = 0
+    for ln in lines:
+        key = ln.rstrip()
+        if key and key == prev:
+            count += 1
+            if count <= max_repeats:
+                out.append(ln)
+            elif count == max_repeats + 1:
+                out.append("// ... (repeated pattern truncated)")
+        else:
+            prev  = key
+            count = 1
+            out.append(ln)
+    return "\n".join(out)
+
+
+def _plan_code_files(
+    role: str,
+    agent: AgentConfig,
+    ollama_base_url: str,
+    user_input: str,
+    tech_stack: list[str] | None,
+    context_summary: str,
+    extra_instruction: str = "",
+) -> list[dict]:
+    """Dùng CODING_PLANNER_MODEL để lấy danh sách file cần tạo."""
+    planner = ChatOllama(
+        model=CODING_PLANNER_MODEL,
+        base_url=ollama_base_url,
+        temperature=0.1,
+        num_ctx=min(8192, OLLAMA_NUM_CTX),
+        request_timeout=float(OLLAMA_REQUEST_TIMEOUT),
+    )
+    stack_str = ", ".join(tech_stack) if tech_stack else "not specified"
+    prompt = _PLAN_PROMPT_TMPL.format(
+        role_name=agent.name,
+        max_files=_MAX_FILES_PER_ROLE,
+        user_input=user_input[:500],
+        tech_stack=stack_str,
+        context_summary=context_summary[:1000],
+        extra=f"Constraint: {extra_instruction}" if extra_instruction else "",
+    )
+    try:
+        resp = planner.invoke([HumanMessage(content=prompt)])
+        content = str(resp.content)
+        m = re.search(r"\[.*\]", content, re.DOTALL)
+        if m:
+            files = _json.loads(m.group(0))
+            return [
+                f for f in files
+                if isinstance(f, dict) and "filename" in f
+            ][:_MAX_FILES_PER_ROLE]
+    except Exception as exc:
+        logger.warning("File planning failed for %s: %s", role, exc)
+    return []
+
+
+def _generate_one_file(
+    filename: str,
+    description: str,
+    language: str,
+    agent: AgentConfig,
+    ollama_base_url: str,
+    tech_stack: list[str] | None,
+    extra_instruction: str = "",
+    context_snippet: str = "",
+) -> str:
+    """Tạo nội dung một file bằng coding model, strip code fences, remove loops."""
+    llm = ChatOllama(
+        model=agent.model,
+        base_url=ollama_base_url,
+        temperature=0.1,
+        num_ctx=_get_num_ctx(agent.model),
+        request_timeout=float(OLLAMA_REQUEST_TIMEOUT),
+    )
+    stack_str = ", ".join(tech_stack) if tech_stack else "not specified"
+    ctx_block  = f"\n\nReview context (previous agents):\n{context_snippet}" if context_snippet else ""
+    prompt = _FILE_GEN_PROMPT_TMPL.format(
+        filename=filename,
+        description=description,
+        language=language,
+        tech_stack=stack_str,
+        extra=extra_instruction,
+    ) + ctx_block
+    try:
+        resp = llm.invoke([
+            SystemMessage(content=f"You are a {agent.name}. Write clean, complete, production-ready code."),
+            HumanMessage(content=prompt),
+        ])
+        result = str(resp.content)
+        result = _strip_code_fence(result, language)   # remove nested fences
+        result = _deloop(result)                        # remove infinite loops
+        return result
+    except Exception as exc:
+        logger.warning("File gen failed for %s (%s): %s", agent.name, filename, exc)
+        return f"// Error generating {filename}: {exc}"
+
+
+def _generate_artifacts_multi_turn(
+    role: str,
+    agent: AgentConfig,
+    ollama_base_url: str,
+    context: str,
+    user_input: str,
+    tech_stack: list[str] | None,
+    extra_instruction: str = "",
+) -> str:
+    """
+    Sinh code/artifact theo 2 pha:
+    1. Lập kế hoạch — lấy danh sách file dùng CODING_PLANNER_MODEL (granite3.3:2b).
+    2. Loop — tạo từng file riêng bằng coding model với context nhỏ và tập trung.
+    Trả về markdown tổng hợp với ### FILE: sections.
+    """
+    context_summary = context[-1200:]
+    files = _plan_code_files(
+        role, agent, ollama_base_url, user_input, tech_stack, context_summary, extra_instruction
+    )
+
+    if not files:
+        logger.warning("No files planned for %s, fallback to single call", role)
+        return _call_agent(agent, ollama_base_url, context[-2000:])
+
+    logger.info(
+        "Planned %d files for %s: %s",
+        len(files), role, [f.get("filename") for f in files],
+    )
+
+    parts: list[str] = [f"## {agent.name}\n"]
+    # Review roles benefit from seeing previous agent outputs
+    _review_roles = {"tech_lead", "devsecops"}
+    ctx_snippet = context[-1500:] if role in _review_roles else ""
+    for file_info in files:
+        filename    = file_info.get("filename", "unknown")
+        description = file_info.get("description", "")
+        language    = file_info.get("language", "text")
+        logger.info("Generating file %s for role=%s", filename, role)
+        file_content = _generate_one_file(
+            filename, description, language, agent, ollama_base_url, tech_stack,
+            extra_instruction, ctx_snippet,
+        )
+        parts.append(f"\n### FILE: {filename}\n```{language}\n{file_content}\n```\n")
+
+    return "\n".join(parts)
 
 
 def _call_agent(
@@ -130,18 +388,39 @@ def _call_agent(
     ollama_base_url: str,
     context: str,
 ) -> str:
-    """Gọi LLM với system prompt của agent + context đã tổng hợp."""
+    """Gọi LLM với system prompt của agent + context đã tổng hợp.
+
+    Nếu model trả về output rỗng hoặc quá ngắn (< 30 ký tự), thực hiện
+    retry với context rút gọn (1 500 ký tự cuối) để xử lý các model nhỏ
+    có context window hạn chế.
+    """
     llm = ChatOllama(
         model=agent.model,
         base_url=ollama_base_url,
         temperature=0.1,
-        num_ctx=OLLAMA_NUM_CTX,
+        num_ctx=_get_num_ctx(agent.model),
+        request_timeout=float(OLLAMA_REQUEST_TIMEOUT),
     )
-    response = llm.invoke([
+    messages = [
         SystemMessage(content=COMMON_AGENT_RULES + "\n\n---\n\n" + agent.system_prompt),
         HumanMessage(content=context),
-    ])
-    return str(response.content)
+    ]
+    response = llm.invoke(messages)
+    result   = str(response.content)
+
+    if len(result.strip()) < 30:
+        logger.warning(
+            "Agent '%s' (model=%s) trả về output rất ngắn (%d chars) — retry với context rút gọn.",
+            agent.name, agent.model, len(result.strip()),
+        )
+        trimmed = context[-1500:] if len(context) > 1500 else context
+        response = llm.invoke([
+            SystemMessage(content=COMMON_AGENT_RULES + "\n\n---\n\n" + agent.system_prompt),
+            HumanMessage(content=trimmed),
+        ])
+        result = str(response.content)
+
+    return result
 
 
 # ── Factory tạo node ───────────────────────────────────────────────────────────────
@@ -162,19 +441,31 @@ def _build_node(role: str):
                     agent.step_id, agent.name, agent.model)
 
         step_outputs: dict[str, str] = state.get("step_outputs", {})
+        tech_stack = state.get("tech_stack")
+        # Giới hạn chars mỗi dep cho các role có nhiều dependencies
+        dep_max_chars = _PER_DEP_CHARS.get(role, MAX_PREV_OUTPUT_CHARS)
 
         # 1. Tổng hợp context
         context_parts: list[str] = [
             f"## Mục tiêu kinh doanh / Yêu cầu đầu vào\n{state['user_input']}"
         ]
 
+        # Ngày hiện tại — quan trọng cho PM/BA để tạo timeline không bị lùi về quá khứ
+        if role in {"pm", "ba", "sa", "ta"}:
+            now = datetime.now()
+            context_parts.append(
+                f"\n## Ngày hiện tại\n"
+                f"{now.strftime('%d/%m/%Y')} (tháng {now.month} năm {now.year}). "
+                f"Mọi timeline, sprint, milestone PHẢI bắt đầu từ ngày này trở về sau. "
+                f"Không dùng bất kỳ ngày nào trong quá khứ."
+            )
+
         # Chèn tech stack ngay sau user input nếu có
-        tech_stack = state.get("tech_stack")
         if tech_stack:
             stack_lines = "\n".join(f"- {item}" for item in tech_stack)
             context_parts.append(
                 f"\n## Công nghệ bắt buộc\n"
-                f"Các công nghệ sau BẪT BUỘC phải sử dụng. Không đề xuất lựa chọn khác "
+                f"Các công nghệ sau BẮT BUỘC phải sử dụng. Không đề xuất lựa chọn khác "
                 f"trừ khi được yêu cầu rõ ràng.\n{stack_lines}"
             )
 
@@ -182,7 +473,7 @@ def _build_node(role: str):
             if dep in step_outputs:
                 dep_name = AGENTS[dep].name
                 context_parts.append(
-                    f"\n## Kết quả {dep_name}\n{_truncate(step_outputs[dep])}"
+                    f"\n## Kết quả {dep_name}\n{_truncate(step_outputs[dep], dep_max_chars)}"
                 )
 
         # 2. Bổ sung RAG (tùy chọn)
@@ -200,13 +491,113 @@ def _build_node(role: str):
                     f"\n## Context từ Knowledge Base\n{_truncate(rag_text)}"
                 )
 
+        # DB-type awareness cho DBA và DA roles
+        if role in {"dba", "da"} and tech_stack:
+            db_type = _detect_db_type(tech_stack)
+            if role == "dba":
+                if db_type == "nosql":
+                    context_parts.append(
+                        "\n## DB Schema: NoSQL Only\n"
+                        "Tech stack chỉ dùng NoSQL (MongoDB). Tạo Mongoose schema files (.ts). "
+                        "KHÔNG tạo SQL DDL hay CREATE TABLE. "
+                        "Dùng embedded documents và arrays thay cho JOINs/FK."
+                    )
+                elif db_type == "sql":
+                    context_parts.append(
+                        "\n## DB Schema: SQL Relational\n"
+                        "Tech stack dùng relational DB. Tạo SQL DDL với CREATE TABLE, "
+                        "FOREIGN KEY relationships, và CREATE INDEX."
+                    )
+                elif db_type == "both":
+                    context_parts.append(
+                        "\n## DB Schema: Mixed (SQL + NoSQL)\n"
+                        "Tech stack dùng cả SQL và NoSQL. Tạo SQL DDL schema VÀ "
+                        "Mongoose models riêng cho từng data store."
+                    )
+            elif role == "da":
+                if db_type == "nosql":
+                    context_parts.append(
+                        "\n## Data Analysis: NoSQL Only\n"
+                        "Tech stack chỉ dùng MongoDB NoSQL. Sử dụng aggregation pipeline "
+                        "($match, $group, $project, $lookup). "
+                        "Nếu cần cross-collection analysis: BE export CSV trước, DA đọc CSV bằng Python/pandas. "
+                        "KHÔNG dùng SQL SELECT/FROM/WHERE."
+                    )
+                elif db_type == "sql":
+                    context_parts.append(
+                        "\n## Data Analysis: SQL\n"
+                        "Tech stack dùng relational DB. Phân tích bằng SQL queries với "
+                        "GROUP BY, window functions, aggregates, CTEs."
+                    )
+
+        # Tính extra_instruction cho _generate_artifacts_multi_turn
+        extra_instruction = ""
+        if role in _ARTIFACT_ROLES and tech_stack:
+            db_type = _detect_db_type(tech_stack)
+            if role == "dba":
+                if db_type == "nosql":
+                    extra_instruction = (
+                        "Use MongoDB Mongoose models (TypeScript .ts files). "
+                        "NO SQL CREATE TABLE or DDL. "
+                        "Embedded documents and arrays instead of FK/JOINs."
+                    )
+                elif db_type == "sql":
+                    extra_instruction = (
+                        "Use SQL DDL with CREATE TABLE, FOREIGN KEY references, and CREATE INDEX."
+                    )
+                elif db_type == "both":
+                    extra_instruction = (
+                        "Create both SQL DDL (schema.sql) AND Mongoose models (.ts). "
+                        "SQL for relational data, MongoDB for document data."
+                    )
+            elif role == "da":
+                if db_type == "nosql":
+                    extra_instruction = (
+                        "Use MongoDB aggregation pipeline. No SQL. "
+                        "Show how BE exports a CSV and write Python/pandas analysis script."
+                    )
+                elif db_type == "sql":
+                    extra_instruction = "Use SQL queries with GROUP BY, aggregates, and window functions."
+            elif role == "fe":
+                extra_instruction = (
+                    "Write real React/TypeScript component with JSX markup, hooks, and props interface. "
+                    "No license headers."
+                )
+            elif role == "mobile":
+                extra_instruction = (
+                    "Write real Flutter/Dart widget or React Native component with actual UI code. "
+                    "No license headers."
+                )
+            elif role == "be":
+                extra_instruction = (
+                    "Write real NestJS service, controller, or DTO with actual business logic. "
+                    "No license headers."
+                )
+            elif role == "devsecops":
+                extra_instruction = (
+                    "Write real Dockerfile, docker-compose.yml, or CI/CD YAML with working config. "
+                    "No license headers."
+                )
+            elif role == "tech_lead":
+                extra_instruction = (
+                    "Write ARCHITECTURE.md or INTEGRATION.md with technical review, "
+                    "integration decisions, code standards, and specific code change recommendations."
+                )
+
         context = "\n".join(context_parts)
+        ollama_url = state.get("ollama_base_url", OLLAMA_BASE_URL)
 
         # 3. Gọi LLM
         error_msg: str | None = None
         try:
-            output = _call_agent(agent, state.get(
-                "ollama_base_url", OLLAMA_BASE_URL), context)
+            if role in _ARTIFACT_ROLES:
+                # Sinh code theo từng file riêng biệt (planner + loop)
+                output = _generate_artifacts_multi_turn(
+                    role, agent, ollama_url, context,
+                    state["user_input"], tech_stack, extra_instruction,
+                )
+            else:
+                output = _call_agent(agent, ollama_url, context)
         except Exception as exc:
             logger.error("Agent '%s' gặp lỗi: %s", role, exc)
             output = f"[LỖI trong {role}] {exc}"
@@ -215,8 +606,6 @@ def _build_node(role: str):
         logger.info("Step %d | %s | output_len=%d",
                     agent.step_id, agent.name, len(output))
 
-        # Trả về từng slice — reducer xử lý gộp/nối.
-        # Luôn bao gồm "error" để cập nhật trường khi có lỗi.
         result: dict = {
             "step_outputs": {role: output},
             "completed_steps": [role],
@@ -307,7 +696,7 @@ def run_single_step(
         stack_lines = "\n".join(f"- {item}" for item in tech_stack)
         context_parts.append(
             f"\n## Công nghệ bắt buộc\n"
-            f"Các công nghệ sau BẪT BUỘC phải sử dụng. Không đề xuất lựa chọn khác "
+            f"Các công nghệ sau BẮT BUỘC phải sử dụng. Không đề xuất lựa chọn khác "
             f"trừ khi được yêu cầu rõ ràng.\n{stack_lines}"
         )
 

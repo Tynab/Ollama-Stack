@@ -124,6 +124,9 @@ services:
       RAG_API_URL: ${RAG_API_URL}
       RAG_TOP_K: ${RAG_TOP_K}
       RAG_TIMEOUT: ${RAG_TIMEOUT:-600}
+      OLLAMA_REQUEST_TIMEOUT: ${OLLAMA_REQUEST_TIMEOUT:-1200}
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-32768}
+      CODING_PLANNER_MODEL: ${CODING_PLANNER_MODEL:-granite3.3:2b}
       BA_MODEL: ${BA_MODEL}
       PM_MODEL: ${PM_MODEL}
       SA_MODEL: ${SA_MODEL}
@@ -138,8 +141,10 @@ services:
       TESTER_MODEL: ${TESTER_MODEL}
       DEVSECOPS_MODEL: ${DEVSECOPS_MODEL}
       MEMORY_DIR: /data/memory
+      ARTIFACT_DIR: /data/artifacts
     volumes:
       - ./data/memory:/data/memory
+      - ./data/artifacts:/data/artifacts
     networks:
       - yan
     depends_on:
