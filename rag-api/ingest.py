@@ -26,7 +26,6 @@ Graph enrichment (tùy chọn)
 import hashlib
 import json
 import logging
-import math
 import os
 import uuid
 from collections.abc import Iterable
@@ -440,32 +439,11 @@ def _ingest_project(project: str, reset: bool = False) -> dict:
     all_pairs: list[tuple] = []
 
     for batch_no, chunk_batch in enumerate(batched(chunks, UPSERT_BATCH_SIZE), start=1):
-        # Bỏ qua chunk rỗng — Ollama trả về NaN vector cho empty text
-        chunk_batch = [c for c in chunk_batch if c.page_content.strip()]
-        if not chunk_batch:
-            logger.warning("Batch %s: tất cả chunk rỗng, bỏ qua", batch_no)
-            continue
-
         logger.info("Embedding batch %s: %s chunks",
                     batch_no, len(chunk_batch))
 
         texts = [chunk.page_content for chunk in chunk_batch]
         vectors = embeddings.embed_documents(texts)
-
-        # Loại bỏ vector chứa NaN/inf (Ollama lỗi hoặc empty input)
-        valid = [
-            (c, v) for c, v in zip(chunk_batch, vectors)
-            if all(math.isfinite(x) for x in v)
-        ]
-        if len(valid) < len(chunk_batch):
-            logger.warning(
-                "Batch %s: bỏ qua %s chunk có vector NaN/inf",
-                batch_no, len(chunk_batch) - len(valid),
-            )
-        if not valid:
-            continue
-        chunk_batch, vectors = zip(*valid)
-        chunk_batch, vectors = list(chunk_batch), list(vectors)
 
         _now = datetime.now(timezone.utc).isoformat()
         points = [
