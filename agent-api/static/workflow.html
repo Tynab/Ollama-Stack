@@ -665,6 +665,7 @@ let lastData     = null;   // last successful API response
 let startTime    = null;   // Date of created_at for duration counter
 let userPickedTab = false; // true when user manually clicked a tab
 let artifactsCache = {};   // { role: [file_meta, ...] } — artifacts for current workflow
+let subTabState  = {};     // { role: 'output'|'files' } — preserves sub-tab selection per role
 
 /* ────────────────────────────────────────────────────────────────────────
    INIT — pick up workflow_id from URL query string
@@ -934,13 +935,22 @@ function renderTabBody(data) {
     const filesBtn = roleArts.length
       ? `<button class="sub-tab-btn" id="stb-files" onclick="switchSubTab('files')">📁 Files <span class="art-count">${roleArts.length}</span></button>`
       : '';
+    const curSubTab    = subTabState[activeTab] || 'output';  // restore persisted selection
+    const outActive    = curSubTab === 'output' ? ' active' : '';
+    const outDisplay   = curSubTab === 'output' ? '' : 'none';
+    const filesDisplay = curSubTab === 'files'  ? '' : 'none';
     const subTabRow = filesBtn
-      ? `<div class="sub-tab-row"><button class="sub-tab-btn active" id="stb-output" onclick="switchSubTab('output')">📄 Output</button>${filesBtn}</div>`
+      ? `<div class="sub-tab-row"><button class="sub-tab-btn${outActive}" id="stb-output" onclick="switchSubTab('output')">📄 Output</button>${filesBtn}</div>`
       : '';
     body.innerHTML = `
       ${subTabRow}
-      <div id="sub-output"><div class="md">${clean}</div></div>
-      <div id="sub-files" style="display:none">${renderFileTree(activeTab, roleArts)}</div>`;
+      <div id="sub-output" style="display:${outDisplay}"><div class="md">${clean}</div></div>
+      <div id="sub-files" style="display:${filesDisplay}">${renderFileTree(activeTab, roleArts)}</div>`;
+    // Restore active class on Files button when Files sub-tab is selected
+    if (curSubTab === 'files') {
+      const btnFil = document.getElementById('stb-files');
+      if (btnFil) btnFil.classList.add('active');
+    }
     // Apply syntax highlighting to code blocks inside rendered markdown
     if (window.hljs) {
       body.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
@@ -1135,6 +1145,7 @@ async function loadArtifacts(wid) {
 }
 
 function switchSubTab(which) {
+  subTabState[activeTab] = which;   // persist selection for this role
   const out    = document.getElementById('sub-output');
   const files  = document.getElementById('sub-files');
   const btnOut = document.getElementById('stb-output');

@@ -29,6 +29,7 @@ import logging
 import os
 import uuid
 from collections.abc import Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,6 +67,9 @@ EMBEDDING_MODEL = _require_env("EMBEDDING_MODEL")
 CHUNK_SIZE = int(_require_env("CHUNK_SIZE"))
 CHUNK_OVERLAP = int(_require_env("CHUNK_OVERLAP"))
 UPSERT_BATCH_SIZE = int(_require_env("UPSERT_BATCH_SIZE"))
+# Số embed worker song song gửi đến Ollama.
+# Nên = OLLAMA_NUM_PARALLEL; mặc định 1 (an toàn cho GPU 6GB).
+INGEST_EMBED_WORKERS: int = max(1, int(os.environ.get("INGEST_EMBED_WORKERS", "1")))
 
 GRAPH_ENABLED: bool = os.environ.get("GRAPH_ENABLED", "true").lower() == "true"
 GRAPH_ENTITY_EXTRACTION: bool = os.environ.get(
@@ -438,43 +442,79 @@ def _ingest_project(project: str, reset: bool = False) -> dict:
     # (chunk, qdrant_point_id) — dùng để lưu vào Neo4j graph
     all_pairs: list[tuple] = []
 
-    for batch_no, chunk_batch in enumerate(batched(chunks, UPSERT_BATCH_SIZE), start=1):
-        logger.info("Embedding batch %s: %s chunks",
-                    batch_no, len(chunk_batch))
+    chunk_batches = list(batched(chunks, UPSERT_BATCH_SIZE))
+    total_batches = len(chunk_batches)
 
-        texts = [chunk.page_content for chunk in chunk_batch]
-        vectors = embeddings.embed_documents(texts)
-
-        _now = datetime.now(timezone.utc).isoformat()
-        points = [
-            PointStruct(
-                id=make_point_id(chunk),
-                vector=vector,
-                payload={
-                    **chunk.metadata,
-                    "page_content": chunk.page_content,
-                    "project": project,
-                    "module": _infer_module(
-                        chunk.metadata.get("relative_path", ""), project
-                    ),
-                    "doc_type": _infer_doc_type(
-                        chunk.metadata.get("source_file", ""),
-                        chunk.metadata.get("relative_path", ""),
-                    ),
-                    "chunk_type": _infer_chunk_type(chunk.page_content),
-                    "language": "vi",
-                    "status": "active",
-                    "created_at": _now,
-                },
-            )
-            for chunk, vector in zip(chunk_batch, vectors)
+    # Pipeline: embed[N] chạy song song với upsert[N-1] vào Qdrant.
+    # INGEST_EMBED_WORKERS=1 phù hợp OLLAMA_NUM_PARALLEL=1 (GPU 6GB).
+    # Tăng cả hai lên 2-4 nếu nâng cấp GPU / dùng embedding model riêng.
+    with ThreadPoolExecutor(
+        max_workers=INGEST_EMBED_WORKERS + 1,  # +1 slot dành cho upsert
+        thread_name_prefix="rag",
+    ) as pool:
+        # Nộp toàn bộ embed task lên pool; pool tự giới hạn INGEST_EMBED_WORKERS luồng.
+        embed_futures: list[Future] = [
+            pool.submit(embeddings.embed_documents, [c.page_content for c in batch])
+            for batch in chunk_batches
         ]
 
-        client.upsert(collection_name=collection_name,
-                      points=points, wait=True)
-        all_pairs.extend(zip(chunk_batch, [str(p.id) for p in points]))
-        total_upserted += len(points)
-        logger.info("Upserted %s/%s chunks", total_upserted, len(chunks))
+        upsert_future: Future | None = None
+
+        for batch_no, (chunk_batch, embed_future) in enumerate(
+            zip(chunk_batches, embed_futures), start=1
+        ):
+            logger.info(
+                "Embed %s/%s: %s chunks...", batch_no, total_batches, len(chunk_batch)
+            )
+            vectors = embed_future.result()
+
+            _now = datetime.now(timezone.utc).isoformat()
+            points = [
+                PointStruct(
+                    id=make_point_id(chunk),
+                    vector=vector,
+                    payload={
+                        **chunk.metadata,
+                        "page_content": chunk.page_content,
+                        "project": project,
+                        "module": _infer_module(
+                            chunk.metadata.get("relative_path", ""), project
+                        ),
+                        "doc_type": _infer_doc_type(
+                            chunk.metadata.get("source_file", ""),
+                            chunk.metadata.get("relative_path", ""),
+                        ),
+                        "chunk_type": _infer_chunk_type(chunk.page_content),
+                        "language": "vi",
+                        "status": "active",
+                        "created_at": _now,
+                    },
+                )
+                for chunk, vector in zip(chunk_batch, vectors)
+            ]
+
+            # Chờ upsert batch trước hoàn tất (đã chạy song song với embed này)
+            if upsert_future is not None:
+                upsert_future.result()
+
+            all_pairs.extend(zip(chunk_batch, [str(p.id) for p in points]))
+            total_upserted += len(points)
+
+            # Nộp upsert batch này vào pool — chạy song song với embed batch tiếp theo
+            upsert_future = pool.submit(
+                client.upsert,
+                collection_name=collection_name,
+                points=points,
+                wait=True,
+            )
+            logger.info(
+                "Upsert queued %s/%s | indexed %s/%s chunks",
+                batch_no, total_batches, total_upserted, len(chunks),
+            )
+
+        # Đảm bảo upsert batch cuối hoàn tất
+        if upsert_future is not None:
+            upsert_future.result()
 
     count_result = client.count(collection_name=collection_name, exact=True)
     logger.info("Project '%s' done. Points: %s", project, count_result.count)
