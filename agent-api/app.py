@@ -44,6 +44,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from artifacts import ARTIFACT_ROLES as _ARTIFACT_ROLES, extract_and_save as _extract_artifacts, list_artifacts as _list_artifacts, read_artifact as _read_artifact
 from agents import AGENTS, WORKFLOW_STEPS
 from workflow import (
     OLLAMA_BASE_URL,
@@ -138,6 +139,7 @@ class WorkflowRecord(BaseModel):
     step_outputs: dict[str, str] = {}
     completed_steps: list[str] = []
     error: str | None = None
+    artifacts: dict[str, list] = {}
     created_at: str
     completed_at: str | None = None
 
@@ -260,6 +262,16 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
                     # Cập nhật real-time để GET /workflow/{id} phản ánh tiến trình
                     if "step_outputs" in node_output:
                         record.step_outputs.update(node_output["step_outputs"])
+                        # Trích xuất artifact cho các role có file code (non-fatal)
+                        for _role, _out in node_output["step_outputs"].items():
+                            if (
+                                _role in _ARTIFACT_ROLES
+                                and _out
+                                and not _out.startswith("[LỖI")
+                            ):
+                                _arts = _extract_artifacts(_role, _out, workflow_id)
+                                if _arts:
+                                    record.artifacts[_role] = _arts
                     if "completed_steps" in node_output:
                         record.completed_steps = list(
                             dict.fromkeys(
@@ -424,6 +436,55 @@ def list_workflows() -> dict[str, Any]:
             for r in reversed(snapshot)
         ],
     }
+
+
+@app.get("/workflow/{workflow_id}/artifacts")
+def get_workflow_artifacts(workflow_id: str) -> dict[str, Any]:
+    """Liệt kê artifacts đã lưu cho workflow (metadata only, không bao gồm nội dung file)."""
+    with _store_lock:
+        record = workflow_store.get(workflow_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Workflow '{workflow_id}' không tìm thấy.",
+        )
+    # Merge in-memory artifacts with disk (in case container was restarted)
+    disk_arts = _list_artifacts(workflow_id)
+    merged = {**disk_arts, **record.artifacts}
+    return {"workflow_id": workflow_id, "artifacts": merged}
+
+
+@app.get("/workflow/{workflow_id}/artifacts/{role}/{path:path}")
+def get_artifact_file(
+    workflow_id: str,
+    role: str,
+    path: str,
+    download: bool = False,
+) -> Any:
+    """
+    Trả về nội dung file artifact.
+    GET ?download=1  → tải về dưới dạng binary.
+    GET              → trả về JSON {path, language, content}.
+    """
+    from fastapi.responses import Response as _Resp
+
+    # Validate role to prevent path traversal — only known artifact roles are valid.
+    if role not in _ARTIFACT_ROLES:
+        raise HTTPException(status_code=404, detail="File không tìm thấy.")
+
+    result = _read_artifact(workflow_id, role, path)
+    if result is None:
+        raise HTTPException(status_code=404, detail="File không tìm thấy.")
+    content, language = result
+    if download:
+        # Strip path separators and quote chars to prevent header injection.
+        safe_filename = Path(path).name.replace('"', "").replace("\n", "").replace("\r", "")
+        return _Resp(
+            content=content.encode("utf-8"),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+        )
+    return {"path": path, "language": language, "content": content}
 
 
 @app.get("/ui", include_in_schema=False)

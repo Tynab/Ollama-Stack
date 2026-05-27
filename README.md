@@ -25,7 +25,7 @@ Local AI stack chạy hoàn toàn offline: **Ollama** (LLM inference) + **Qdrant
 | Chat — RAG API `/ask`                        | `CHAT_MODEL`                                                      | `qwen2.5-coder:14b`       |
 | Reasoning agents (BA / PM / SA / TA / DA)   | `BA_MODEL` `PM_MODEL` `SA_MODEL` `TA_MODEL` `DA_MODEL`            | `qwen3.6:35b`             |
 | Coding agents (FE / Mobile / BE / DBA / Tech Lead / DevSecOps) | `FE_MODEL` `MOBILE_MODEL` `BE_MODEL` `DBA_MODEL` `TECH_LEAD_MODEL` `DEVSECOPS_MODEL` | `qwen3-coder-next` |
-| Creative agents (QA / Designer)             | `QA_MODEL` `DESIGNER_MODEL`                                       | `qwen3.5:35b`             |
+| Creative agents (Tester / Designer)         | `TESTER_MODEL` `DESIGNER_MODEL`                                   | `qwen3.5:35b`             |
 
 > **Lưu ý:** Đổi `EMBEDDING_MODEL` yêu cầu re-ingest toàn bộ documents (`POST /ingest {"reset": true}`).
 
@@ -63,9 +63,9 @@ User → Open WebUI (8085)
 | 8    | `dba`           | DBA — Kiến trúc cơ sở dữ liệu              | DBA_MODEL         | ba, sa, ta                             |
 | 9    | `be`            | BE — Triển khai Backend                     | BE_MODEL          | ba, sa, ta, fe, mobile, dba            |
 | 10   | `da`            | DA — Phân tích & Báo cáo dữ liệu           | DA_MODEL          | ba, sa, dba                            |
-| 11   | `tech_lead`     | Tech Lead — Review code & Tiêu chuẩn        | TECH_LEAD_MODEL   | fe, mobile, be, dba                    |
-| 12   | `tester`        | Tester — Kiểm thử & Đảm bảo chất lượng    | QA_MODEL          | be, fe, mobile, tech_lead, designer    |
-| 13   | `devsecops`     | DevSecOps — Hạ tầng, CI/CD & Bảo mật       | DEVSECOPS_MODEL   | sa, tester                             |
+| 11   | `tech_lead`     | Tech Lead — Review code & Tiêu chuẩn        | TECH_LEAD_MODEL   | sa, fe, mobile, be, dba                |
+| 12   | `tester`        | Tester — Kiểm thử & Đảm bảo chất lượng    | TESTER_MODEL      | be, fe, mobile, tech_lead, designer    |
+| 13   | `devsecops`     | DevSecOps — Hạ tầng, CI/CD & Bảo mật       | DEVSECOPS_MODEL   | sa, ta, tech_lead, tester              |
 
 Mỗi bước nhận truncated output của các bước phụ thuộc và tùy chọn RAG context từ knowledge base.
 
@@ -229,9 +229,9 @@ BE_MODEL=qwen3-coder-next
 DBA_MODEL=qwen3-coder-next
 TECH_LEAD_MODEL=qwen3-coder-next
 DEVSECOPS_MODEL=qwen3-coder-next
-# Creative/QA agents (Designer / Tester)
+# Creative/Tester agents (Designer / Tester)
 DESIGNER_MODEL=qwen3.5:35b
-QA_MODEL=qwen3.5:35b
+TESTER_MODEL=qwen3.5:35b
 
 # ─── RAG API ─────────────────────────────────────────────────────────────────
 CHAT_MODEL=qwen2.5-coder:14b    # model dùng cho /ask response
@@ -277,7 +277,7 @@ docker exec ollama ollama pull qwen3.6:35b
 # SDLC Agents — coding (FE / Mobile / BE / DBA / Tech Lead / DevSecOps)
 docker exec ollama ollama pull qwen3-coder-next
 
-# SDLC Agents — creative/QA (Designer / Tester)
+# SDLC Agents — creative/tester (Designer / Tester)
 docker exec ollama ollama pull qwen3.5:35b
 ```
 
@@ -345,6 +345,7 @@ curl -s -X POST http://localhost:8090/ask \
 | **RAG API Docs**     | http://localhost:8090/docs             | Swagger UI                      |
 | **RAG API ReDoc**    | http://localhost:8090/redoc            | ReDoc                           |
 | **Agent API**        | http://localhost:8091                  | SDLC Agent Orchestrator root    |
+| **Agent API UI**     | http://localhost:8091/ui               | SDLC Workflow UI                |
 | **Agent API Docs**   | http://localhost:8091/docs             | Swagger UI                      |
 | **Ollama API**       | http://localhost:11434                 | LLM inference API               |
 | **Qdrant UI**        | http://localhost:6333/dashboard        | Vector DB dashboard             |
@@ -409,7 +410,7 @@ curl -s -X POST http://localhost:8091/agent/pm \
 ### Chạy full SDLC Workflow (async)
 
 ```bash
-# 1. Submit workflow → nhận workflow_id
+# 1a. Submit workflow cơ bản → nhận workflow_id
 curl -s -X POST http://localhost:8091/workflow/run \
   -H "Content-Type: application/json" \
   -d '{
@@ -417,6 +418,26 @@ curl -s -X POST http://localhost:8091/workflow/run \
     "project": "marketplace",
     "rag_enabled": true,
     "rag_top_k": 5
+  }' | jq
+
+# 1b. Submit workflow với tech_stack bắt buộc (optional)
+# Mỗi agent sẽ nhận danh sách này trong context "## Công nghệ bắt buộc"
+curl -s -X POST http://localhost:8091/workflow/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_input": "Xây dựng tính năng checkout và payment cho marketplace",
+    "project": "marketplace",
+    "rag_enabled": true,
+    "rag_top_k": 5,
+    "tech_stack": [
+      "Backend: NestJS (Node.js)",
+      "Frontend: React + TypeScript",
+      "Mobile: React Native",
+      "Database: PostgreSQL",
+      "Cache: Redis",
+      "Message Queue: RabbitMQ",
+      "Infra: Docker, Kubernetes, AWS ECS"
+    ]
   }' | jq
 ```
 

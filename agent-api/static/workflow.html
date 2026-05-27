@@ -6,6 +6,9 @@
   <title>YAN SDLC Agent · Workflow UI</title>
   <script src="https://cdn.jsdelivr.net/npm/marked@11/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
   <style>
     /* ── Reset & tokens ───────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -466,6 +469,86 @@
     ::-webkit-scrollbar-track { background: var(--surface); }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+    /* ── Sub-tabs (Output / Files) ───────────────────────────── */
+    .sub-tab-row {
+      display: flex; gap: 4px;
+      margin-bottom: 18px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0;
+    }
+    .sub-tab-btn {
+      background: none; border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      padding: 6px 14px;
+      font-size: 12px; font-weight: 600;
+      color: var(--muted); cursor: pointer;
+      transition: color .15s;
+    }
+    .sub-tab-btn:hover { color: var(--text); }
+    .sub-tab-btn.active { color: var(--accent-l); border-bottom-color: var(--accent); }
+    .art-count {
+      background: var(--accent); color: #fff;
+      font-size: 10px; padding: 1px 5px;
+      border-radius: 99px; margin-left: 4px;
+    }
+
+    /* ── File tree ───────────────────────────────────────────── */
+    .art-header {
+      display: flex; justify-content: flex-end; margin-bottom: 12px;
+    }
+    .file-tree {
+      border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden; margin-bottom: 16px;
+    }
+    .ft-dir-label {
+      display: block; padding: 6px 14px;
+      font-size: 11px; font-weight: 700; color: var(--muted);
+      background: rgba(255,255,255,.02); letter-spacing: .04em;
+      border-top: 1px solid var(--border);
+    }
+    .ft-dir-label:first-child { border-top: none; }
+    .ft-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 14px 7px 28px; cursor: pointer;
+      transition: background .12s; border-top: 1px solid var(--border);
+    }
+    .ft-item:hover { background: var(--surface2); }
+    .ft-icon  { font-size: 14px; flex-shrink: 0; }
+    .ft-name  { flex: 1; font-size: 12px; font-family: 'SF Mono','Fira Code',monospace; color: var(--text); }
+    .ft-size  { font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .ft-dl    { margin-left: 6px; opacity: 0; transition: opacity .15s; text-decoration: none; flex-shrink: 0; }
+    .ft-item:hover .ft-dl { opacity: 1; }
+
+    /* ── File content viewer ──────────────────────────────────── */
+    .art-viewer {
+      border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden; margin-top: 14px;
+    }
+    .art-viewer-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 14px;
+      background: var(--surface2); border-bottom: 1px solid var(--border);
+    }
+    .art-viewer-path {
+      flex: 1; font-size: 12px;
+      font-family: 'SF Mono','Fira Code',monospace;
+      color: var(--accent-l);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .art-viewer-body {
+      margin: 0; padding: 16px; overflow-x: auto;
+      background: var(--surface); font-size: 12px; line-height: 1.6;
+      max-height: 520px; overflow-y: auto;
+    }
+    /* Override hljs background to match theme */
+    .hljs { background: var(--surface) !important; }
+    /* Markdown code blocks: scrollable, not overflowing */
+    .md pre { max-height: 420px; overflow-y: auto; overflow-x: auto;
+              border-radius: 6px; margin: 8px 0; }
+    .md pre code { font-size: 12px; line-height: 1.5; }
+    .md code { font-size: 12px; }
   </style>
 </head>
 <body>
@@ -581,6 +664,7 @@ let activeTab    = null;   // currently displayed tab role
 let lastData     = null;   // last successful API response
 let startTime    = null;   // Date of created_at for duration counter
 let userPickedTab = false; // true when user manually clicked a tab
+let artifactsCache = {};   // { role: [file_meta, ...] } — artifacts for current workflow
 
 /* ────────────────────────────────────────────────────────────────────────
    INIT — pick up workflow_id from URL query string
@@ -616,6 +700,7 @@ function trackWorkflow(id) {
   userPickedTab = false;
   lastData     = null;
   startTime    = null;
+  artifactsCache = {};   // Reset cache khi bắt đầu theo dõi workflow mới
 
   pushUrl(id);
   showView('wf');
@@ -656,8 +741,16 @@ async function fetchAndUpdate() {
     setPollIndicator(live);
     if (live) {
       pollTimer = setTimeout(fetchAndUpdate, POLL_MS);
+      // Tải artifact metadata trong khi chạy (mỗi khi có role mới hoàn thành)
+      const _artifactRoles = new Set(['fe','mobile','be','dba','devsecops','tech_lead','da']);
+      const _completedArt  = (data.completed_steps || []).filter(r => _artifactRoles.has(r));
+      if (_completedArt.some(r => !(r in artifactsCache))) {
+        loadArtifacts(currentId);
+      }
     } else {
       stopDur();
+      // Luôn tải lại artifact khi workflow kết thúc
+      loadArtifacts(currentId);
     }
   } catch (e) {
     showError(e.message);
@@ -720,7 +813,7 @@ function renderStatusBar(data) {
     </div>
     <div class="meta-item">
       <span class="lbl">Steps</span>
-      <span class="val">${(data.completed_steps || []).length} / 12</span>
+      <span class="val">${(data.completed_steps || []).length} / ${STEPS.length}</span>
     </div>
     ${data.error ? `
     <div class="meta-item" style="flex:1 1 100%">
@@ -830,12 +923,38 @@ function renderTabBody(data) {
   const step = STEPS.find(s => s.role === activeTab);
   if (!step) return;
 
-  const output = data.step_outputs && data.step_outputs[activeTab];
+  const _stepOutputs = data.step_outputs || {};
+  const _hasKey      = activeTab in _stepOutputs;
+  const output       = _stepOutputs[activeTab] || "";
 
-  if (output) {
-    // Completed — render markdown
-    const clean = DOMPurify.sanitize(marked.parse(output));
-    body.innerHTML = `<div class="md">${clean}</div>`;
+  if (_hasKey && output && output.trim()) {
+    // Hoàn thành — render markdown + panel files nếu có artifact
+    const clean    = DOMPurify.sanitize(marked.parse(output));
+    const roleArts = (artifactsCache[activeTab] || []).filter(f => !f.filename.startsWith('_'));
+    const filesBtn = roleArts.length
+      ? `<button class="sub-tab-btn" id="stb-files" onclick="switchSubTab('files')">📁 Files <span class="art-count">${roleArts.length}</span></button>`
+      : '';
+    const subTabRow = filesBtn
+      ? `<div class="sub-tab-row"><button class="sub-tab-btn active" id="stb-output" onclick="switchSubTab('output')">📄 Output</button>${filesBtn}</div>`
+      : '';
+    body.innerHTML = `
+      ${subTabRow}
+      <div id="sub-output"><div class="md">${clean}</div></div>
+      <div id="sub-files" style="display:none">${renderFileTree(activeTab, roleArts)}</div>`;
+    // Apply syntax highlighting to code blocks inside rendered markdown
+    if (window.hljs) {
+      body.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+    }
+
+  } else if (_hasKey && (!output || !output.trim())) {
+    // Hoàn thành nhưng output rỗng (model quá nhỏ hoặc context overflow)
+    body.innerHTML = `
+      <div class="state-box">
+        <div class="big-icon">⚠️</div>
+        <h3 style="color:var(--warn)">${step.name}</h3>
+        <p>Bước này đã hoàn thành nhưng không sinh ra output.<br>
+           Có thể do model quá nhỏ hoặc context vượt giới hạn. Thử dùng model mạnh hơn.</p>
+      </div>`;
 
   } else if (step.role === currentStep) {
     // Currently running
@@ -999,6 +1118,154 @@ function copyId() {
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 2000);
   });
+}
+
+/* ── Artifacts / File tree ──────────────────────────────────────────── */
+
+async function loadArtifacts(wid) {
+  if (!wid) return;
+  try {
+    const res = await fetch(`/workflow/${wid}/artifacts`);
+    if (!res.ok) return;
+    const data = await res.json();
+    artifactsCache = data.artifacts || {};
+    // Re-render tab body nếu tab hiện tại có artifact mới
+    if (lastData && activeTab && artifactsCache[activeTab]) renderTabBody(lastData);
+  } catch (e) { /* non-fatal */ }
+}
+
+function switchSubTab(which) {
+  const out    = document.getElementById('sub-output');
+  const files  = document.getElementById('sub-files');
+  const btnOut = document.getElementById('stb-output');
+  const btnFil = document.getElementById('stb-files');
+  if (!out || !files) return;
+  if (which === 'output') {
+    out.style.display = ''; files.style.display = 'none';
+    if (btnOut) btnOut.classList.add('active');
+    if (btnFil) btnFil.classList.remove('active');
+  } else {
+    out.style.display = 'none'; files.style.display = '';
+    if (btnOut) btnOut.classList.remove('active');
+    if (btnFil) btnFil.classList.add('active');
+  }
+}
+
+function renderFileTree(role, files) {
+  if (!files || !files.length) {
+    return '<p style="color:var(--muted);padding:20px">Không có file artifact nào.</p>';
+  }
+  // Nhóm file theo thư mục cha
+  const byDir = {};
+  for (const f of files) {
+    const parts = f.filename.split('/');
+    const dir   = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+    if (!byDir[dir]) byDir[dir] = [];
+    byDir[dir].push(f);
+  }
+  let html = `<div class="art-header">
+    <button class="btn btn-secondary btn-sm" onclick="downloadRoleZip('${role}')">⬇ Download All</button>
+  </div><div class="file-tree">`;
+  for (const [dir, dirFiles] of Object.entries(byDir).sort()) {
+    if (dir) html += `<span class="ft-dir-label">📂 ${esc(dir)}/</span>`;
+    for (const f of dirFiles) {
+      const icon  = getFileIcon(f.filename);
+      const fname = f.filename.split('/').pop();
+      const encPath = encodeURIComponent(f.filename);
+      html += `<div class="ft-item" onclick="viewArtifact('${role}','${esc(f.filename).replace(/'/g,"\\'")}')">
+        <span class="ft-icon">${icon}</span>
+        <span class="ft-name">${esc(fname)}</span>
+        <span class="ft-size">${fmtSize(f.size)}</span>
+        <a class="btn btn-secondary btn-sm ft-dl"
+           href="/workflow/${currentId}/artifacts/${role}/${encPath}?download=1"
+           download="${esc(fname)}"
+           onclick="event.stopPropagation()">⬇</a>
+      </div>`;
+    }
+  }
+  html += `</div><div id="art-viewer" class="art-viewer" style="display:none"></div>`;
+  return html;
+}
+
+async function viewArtifact(role, path) {
+  try {
+    const encPath = encodeURIComponent(path);
+    const res = await fetch(`/workflow/${currentId}/artifacts/${role}/${encPath}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const viewer = document.getElementById('art-viewer');
+    if (!viewer) return;
+    viewer.style.display = '';
+    const lang    = data.language || 'text';
+    const fname   = path.split('/').pop();
+    const escaped = esc(data.content);
+    viewer.innerHTML = `
+      <div class="art-viewer-header">
+        <span class="art-viewer-path">📄 ${esc(path)}</span>
+        <a class="btn btn-secondary btn-sm"
+           href="/workflow/${currentId}/artifacts/${role}/${encPath}?download=1"
+           download="${esc(fname)}">⬇ Download</a>
+        <button class="btn btn-secondary btn-sm" onclick="closeArtViewer()">✕</button>
+      </div>
+      <pre class="art-viewer-body"><code class="language-${esc(lang)}">${escaped}</code></pre>`;
+    if (window.hljs) {
+      viewer.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+    }
+    viewer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (e) { /* ignore */ }
+}
+
+function closeArtViewer() {
+  const v = document.getElementById('art-viewer');
+  if (v) v.style.display = 'none';
+}
+
+async function downloadRoleZip(role) {
+  const files = (artifactsCache[role] || []).filter(f => !f.filename.startsWith('_'));
+  if (!files.length) { alert('Không có file để tải.'); return; }
+  if (!window.JSZip) { alert('JSZip chưa tải xong, thử lại sau.'); return; }
+
+  const _toast = msg => {
+    const t = document.createElement('div');
+    t.className = 'toast'; t.textContent = msg;
+    document.body.appendChild(t); setTimeout(() => t.remove(), 2800);
+  };
+  _toast(`⏳ Đang nén ${files.length} file…`);
+
+  try {
+    const zip    = new JSZip();
+    const folder = zip.folder(role);
+    await Promise.all(files.map(async f => {
+      const r = await fetch(`/workflow/${currentId}/artifacts/${role}/${encodeURIComponent(f.filename)}`);
+      if (r.ok) { const d = await r.json(); folder.file(f.filename, d.content); }
+    }));
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `${role}-artifacts.zip`; a.click();
+    URL.revokeObjectURL(url);
+    _toast(`✓ Đã tải ${role}-artifacts.zip`);
+  } catch (e) { _toast(`✗ Lỗi: ${e.message}`); }
+}
+
+function getFileIcon(filename) {
+  const ext = filename.split('.').pop().toLowerCase();
+  if (filename === 'Dockerfile' || filename.endsWith('dockerfile')) return '🐳';
+  const m = {
+    ts:'🔷',tsx:'🔷',js:'🟡',jsx:'🟡',py:'🐍',sql:'🗄️',
+    md:'📝',yml:'⚙️',yaml:'⚙️',json:'{ }',sh:'🖥️',
+    dart:'🎯',kt:'🤖',swift:'🍎',go:'🐹',rs:'🦀',
+    html:'🌐',css:'🎨',scss:'🎨',tf:'☁️',
+    java:'☕',toml:'⚙️',xml:'📋',env:'🔑',
+  };
+  return m[ext] || '📄';
+}
+
+function fmtSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB';
 }
 </script>
 </body>

@@ -15,7 +15,7 @@ agents.py — Cấu hình cho 13 agent SDLC trong LangGraph workflow.
    8    dba            DBA_MODEL          ba, sa, ta
    9    be             BE_MODEL           ba, sa, ta, fe, mobile, dba
   10    da             DA_MODEL           ba, sa, dba
-  11    tech_lead      TECH_LEAD_MODEL    fe, mobile, be, dba
+  11    tech_lead      TECH_LEAD_MODEL    sa, fe, mobile, be, dba
   12    tester         TESTER_MODEL       be, fe, mobile, tech_lead, designer
   13    devsecops      DEVSECOPS_MODEL    sa, ta, tech_lead, tester
 
@@ -125,6 +125,7 @@ Structure your output with these sections:
 7. Resource Plan (roles needed, responsibilities, FTE estimate)
 8. Weekly Status Report Template (standard format for stakeholder updates)
 9. Delivery Timeline (Gantt-style text summary: phase, start week, end week, deliverable)
+10. Open Questions (items requiring PO/stakeholder confirmation before planning can be finalized)
 """,
     ),
 
@@ -153,6 +154,7 @@ Structure your output with these sections:
 8. Deployment Architecture (environments: dev/staging/prod; container/K8s topology)
 9. Architecture Decision Records (ADR: problem â†’ options considered â†’ decision â†’ rationale)
 10. Technical Risks & Mitigations
+11. Open Questions (unresolved architectural decisions, missing NFRs, items requiring stakeholder sign-off before implementation)
 """,
     ),
 
@@ -180,6 +182,7 @@ Structure your output with these sections:
 6. Build vs Buy Decision (for key components: custom build or use SaaS/OSS - with criteria)
 7. Architecture Trade-off Analysis (option A vs B: complexity, cost, scalability, team skill fit)
 8. Technical Decision Record (TDR: component -> finalized choice -> version -> justification)
+9. Open Questions (unresolved build vs. buy decisions, unconfirmed cost assumptions, missing NFRs or constraints)
 """,
     ),
 
@@ -208,6 +211,7 @@ Structure your output with these sections:
 8. Error State Designs (network error, not found, permission denied — message + recovery action)
 9. Responsive Behavior (breakpoints, layout changes per viewport: mobile/tablet/desktop)
 10. UX Improvement Suggestions (friction points identified, proposed improvements)
+11. Open Questions (missing brand guidelines, screens or flows requiring PO/designer confirmation, unclear UX requirements)
 """,
     ),
 
@@ -271,6 +275,33 @@ Structure your output with these sections:
 """,
     ),
 
+    # ── Bước 8: DBA Agent ────────────────────────────────────────────────────────────
+    "dba": AgentConfig(
+        step_id=8,
+        role="dba",
+        name="DBA Agent — Database Architecture",
+        model=MODEL_DBA,
+        depends_on=["ba", "sa", "ta"],
+        rag_query_hint="ERD, SQL schema, database design, index, migration plan, query optimization, backup restore, data retention",
+        system_prompt="""\
+You are the Database Architect (DBA) Agent.
+First, check the Required Tech Stack from the TA Agent output: if a relational database is specified, produce SQL schema; if a document store or NoSQL database is specified, produce the appropriate document/collection schema. If both are present, cover both.
+Design the complete database schema, indexes, migration strategy, and
+query optimization plan based on the data model from SA and requirements from BA.
+
+Structure your output with these sections:
+1. ERD - Entity Relationship Diagram (text/ASCII representation of entities and relationships)
+2. SQL Schema (CREATE TABLE statements with constraints, data types, defaults - production-ready; omit if NoSQL only)
+3. NoSQL Schema (document structure, collection design, field types - omit if SQL only)
+4. Index Design (table/collection, index name, fields, type, query it serves)
+5. Migration Plan (ordered migration scripts, rollback script per migration, versioning strategy)
+6. Query Optimization (slow query analysis, rewrite suggestions, execution plan notes)
+7. Backup & Restore Plan (schedule, retention policy, restore procedure, RTO/RPO targets)
+8. Data Retention Rules (which data expires when, archive strategy, GDPR/compliance notes)
+9. DB Performance Checklist (connection pooling, vacuum/analyze schedule, partition strategy)
+""",
+    ),
+
     # ── Bước 9: BE Agent ──────────────────────────────────────────────────────────────────
     "be": AgentConfig(
         step_id=9,
@@ -301,34 +332,6 @@ Structure your output with these sections:
 """,
     ),
 
-    # ── Bước 8: DBA Agent ────────────────────────────────────────────────────────────
-    "dba": AgentConfig(
-        step_id=8,
-        role="dba",
-        name="DBA Agent — Database Architecture",
-        model=MODEL_DBA,
-        depends_on=["ba", "sa", "ta"],
-        rag_query_hint="ERD, SQL schema, database design, index, migration plan, query optimization, backup restore, data retention",
-        system_prompt="""\
-You are the Database Architect (DBA) Agent.
-First, check the Required Tech Stack from the TA Agent output: if a relational database is specified, produce SQL schema; if a document store or NoSQL database is specified, produce the appropriate document/collection schema. If both are present, cover both.
-Design the complete database schema, indexes, migration strategy, and
-query optimization plan based on the data model from SA and requirements from BA.
-
-Structure your output with these sections:
-1. ERD - Entity Relationship Diagram (text/ASCII representation of entities and relationships)
-2. SQL Schema (CREATE TABLE statements with constraints, data types, defaults - production-ready; omit if NoSQL only)
-3. NoSQL Schema (document structure, collection design, field types - omit if SQL only)
-4. Index Design (table/collection, index name, fields, type, query it serves)
-5. Migration Plan (ordered migration scripts, rollback script per migration, versioning strategy)
-6. Query Optimization (slow query analysis, rewrite suggestions, execution plan notes)
-7. Backup & Restore Plan (schedule, retention policy, restore procedure, RTO/RPO targets)
-8. Data Retention Rules (which data expires when, archive strategy, GDPR/compliance notes)
-
-9. DB Performance Checklist (connection pooling, vacuum/analyze schedule, partition strategy)
-""",
-    ),
-
     # ── Bước 10: DA Agent ────────────────────────────────────────────────────────────
     "da": AgentConfig(
         step_id=10,
@@ -348,10 +351,11 @@ Structure your output with these sections:
 2. Metric Dictionary (metric name, business meaning, calculation method, owner)
 3. Dashboard Requirements (dashboard name, target audience, charts/tables, data source, filters)
 4. Report Logic (report name, trigger, data range, aggregation, format: table/chart/export)
-5. SQL Queries for Analysis (named queries with purpose, table sources, logic explanation)
+5. Query Examples (SQL queries with GROUP BY/aggregates for relational DB; MongoDB aggregation pipeline for NoSQL — label which DB each query targets; omit SQL entirely if tech stack is NoSQL-only)
 6. Data Quality Rules (column, rule, severity, remediation action)
 7. Data Mapping (source field -> destination field -> transformation logic)
 8. Analytics Event Definition (event name, trigger, properties, destination: GA/Mixpanel/internal)
+9. Open Questions (unclear KPIs, unresolved data source ownership, missing business rules for metrics)
 """,
     ),
 
@@ -361,7 +365,7 @@ Structure your output with these sections:
         role="tech_lead",
         name="Tech Lead Agent — Code Review & Standards",
         model=MODEL_TECH_LEAD,
-        depends_on=["fe", "mobile", "be", "dba"],
+        depends_on=["sa", "fe", "mobile", "be", "dba"],
         rag_query_hint="code review, refactor, clean architecture, coding standard, performance optimization, technical debt, security review",
         system_prompt="""\
 You are the Tech Lead Agent.
