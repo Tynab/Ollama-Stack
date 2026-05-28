@@ -27,6 +27,7 @@ Singleton Clients
 
 import logging
 import os
+import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -48,6 +49,10 @@ def _require_env(name: str) -> str:
 
 
 LOG_LEVEL = _require_env("LOG_LEVEL")
+
+# Retry config cho embed khi GPU OOM (model lớn đang chạy song song)
+_OOM_KEYWORDS = ("out of memory", "cudaMalloc", "llama runner process has terminated")
+_EMBED_MAX_RETRIES = 3
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -237,7 +242,28 @@ def ask(req: AskRequest) -> AskResponse:
                 )
 
         embeddings = get_embeddings()
-        query_vector = embeddings.embed_query(req.question)
+        query_vector: list[float] | None = None
+        for _attempt in range(1, _EMBED_MAX_RETRIES + 1):
+            try:
+                query_vector = embeddings.embed_query(req.question)
+                break
+            except Exception as _exc:  # noqa: BLE001
+                _is_oom = any(kw in str(_exc) for kw in _OOM_KEYWORDS)
+                if _is_oom and _attempt < _EMBED_MAX_RETRIES:
+                    _wait = 2 ** _attempt  # 2s, 4s
+                    logger.warning(
+                        "Embedding OOM (attempt %d/%d), retrying in %ds: %s",
+                        _attempt, _EMBED_MAX_RETRIES, _wait, _exc,
+                    )
+                    time.sleep(_wait)
+                elif _is_oom:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="GPU không đủ VRAM để embed câu hỏi. Thử lại sau khi inference model được giải phóng.",
+                    ) from _exc
+                else:
+                    raise
+        assert query_vector is not None  # guaranteed by loop above
 
         all_hits = []
         for _proj, coll_name in collections_to_search:
