@@ -239,6 +239,7 @@ RAG_TOP_K=4
 
 # ─── Agent API ───────────────────────────────────────────────────────────────
 MEMORY_DIR=/data/memory          # thư mục ghi episodic log (workflow_runs.jsonl)
+ARTIFACT_DIR=/data/artifacts     # thư mục lưu code artifacts do agent sinh ra
 
 # ─── Bảo mật — bắt buộc đổi trước khi deploy ─────────────────────────────
 NEO4J_PASSWORD=changeme_in_production
@@ -247,7 +248,15 @@ WATCHTOWER_HTTP_API_TOKEN=...
 # ─── Ollama performance ───────────────────────────────────────────────────────
 OLLAMA_MAX_LOADED_MODELS=4      # số model giữ trong VRAM cùng lúc
 OLLAMA_CONTEXT_LENGTH=32768     # context window (tokens) cho mỗi LLM call trong agent-api
+OLLAMA_REQUEST_TIMEOUT=1200     # timeout (giây) cho Ollama LLM call trong agent-api (rag-api dùng 600)
 RAG_TIMEOUT=120                  # timeout (giây) cho mỗi lần gọi RAG /ask trong workflow
+CODING_PLANNER_MODEL=granite3.3:2b  # model nhỏ dùng để lập danh sách file trước khi sinh code
+MAX_FILES_PER_ROLE=6            # số file tối đa mỗi coding agent được sinh trong 1 workflow run
+
+# Số batch embed/upsert chạy đồng thời khi ingest (asyncio pipeline).
+# Đặt bằng OLLAMA_NUM_PARALLEL để khai thác tối đa GPU.
+# GPU 6 GB → 1 | GPU 12 GB → 2 | GPU 24 GB+ → 3-4
+INGEST_EMBED_WORKERS=1
 ```
 
 ### 2. Khởi động stack
@@ -818,9 +827,11 @@ docker compose down -v
 | `/ask` trả về 404 "chưa được ingest" | Chưa chạy `/ingest` | `POST /ingest {"project": "..."}` |
 | `/ingest` trả về `"status": "empty"` | Không có subfolder trong `data/raw/` | Tạo subfolder và đặt file vào đó |
 | `/ask` với `module` không trả kết quả | Module chưa tồn tại trong collection | Kiểm tra tên module = tên thư mục con trong project |
+| Ingest chậm hoặc mất rất lâu | `INGEST_EMBED_WORKERS` quá thấp | Tăng `INGEST_EMBED_WORKERS` = `OLLAMA_NUM_PARALLEL`; restart `rag-api` |
 | Embedding chậm / timeout | Model chưa được pull | `docker exec ollama ollama pull qwen3-embedding:8b` |
 | SDLC workflow `status=failed` | Xem field `error` | `curl .../workflow/{id} \| jq .error` |
 | SDLC step output bắt đầu bằng `[LỖI` | LLM timeout hoặc model chưa pull | Kiểm tra model đã pull, tăng `RAG_TIMEOUT` trong `.env` |
+| Output chứa `<think>...</think>` thô | Model qwen3 / deepseek-r1 / qwq chưa được nhận diện | Kiểm tra tên model khớp với prefix trong `_REASONING_MODELS` (workflow.py) |
 | `user_input` bị cắt ngắn trong workflow | Input > 10 000 ký tự | Input được sanitize tự động; chia nhỏ nếu cần |
 | `workflow_runs.jsonl` không được tạo | `MEMORY_DIR` không mount | Kiểm tra volume `./data/memory:/data/memory` trong `docker-compose.yml` |
 | Open WebUI không gọi được rag-api | URL sai (dùng `localhost`) | Valve `rag_api_url` = `http://rag-api:8090` |

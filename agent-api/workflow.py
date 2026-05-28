@@ -141,7 +141,7 @@ def _truncate(text: str, max_chars: int = MAX_PREV_OUTPUT_CHARS) -> str:
 
 
 # Models that emit <think>...</think> chain-of-thought blocks — stripped from output.
-_REASONING_MODELS: frozenset[str] = frozenset({"phi4-mini-reasoning", "phi4-reasoning", "qwq", "deepseek-r1"})
+_REASONING_MODELS: frozenset[str] = frozenset({"phi4-mini-reasoning", "phi4-reasoning", "qwq", "deepseek-r1", "qwen3"})
 
 
 def _strip_thinking(text: str) -> str:
@@ -329,7 +329,13 @@ def _generate_one_file(
     ) + ctx_block
     try:
         resp = llm.invoke([
-            SystemMessage(content=f"You are a {agent.name}. Write clean, complete, production-ready code."),
+            SystemMessage(content=(
+                COMMON_AGENT_RULES
+                + "\n\n---\n\n"
+                + agent.system_prompt
+                + "\n\nWhen generating a single file, output only the requested file content. "
+                  "Do not repeat other sections or produce a full project overview."
+            )),
             HumanMessage(content=prompt),
         ])
         result = str(resp.content)

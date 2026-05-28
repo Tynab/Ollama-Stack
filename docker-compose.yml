@@ -93,6 +93,7 @@ services:
       NEO4J_DATABASE: ${NEO4J_DATABASE}
       GRAPH_ENABLED: ${GRAPH_ENABLED}
       GRAPH_ENTITY_EXTRACTION: ${GRAPH_ENTITY_EXTRACTION}
+      INGEST_EMBED_WORKERS: ${INGEST_EMBED_WORKERS:-1}
     volumes:
       - ./data/raw:/data/raw
     networks:
@@ -143,6 +144,7 @@ services:
       DEVSECOPS_MODEL: ${DEVSECOPS_MODEL}
       MEMORY_DIR: /data/memory
       ARTIFACT_DIR: /data/artifacts
+      MAX_FILES_PER_ROLE: ${MAX_FILES_PER_ROLE:-6}
     volumes:
       - ./data/memory:/data/memory
       - ./data/artifacts:/data/artifacts

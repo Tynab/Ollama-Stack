@@ -136,10 +136,10 @@ class WorkflowRecord(BaseModel):
     project: str | None
     user_input: str
     tech_stack: list[str] | None = None
-    step_outputs: dict[str, str] = {}
-    completed_steps: list[str] = []
+    step_outputs: dict[str, str] = Field(default_factory=dict)
+    completed_steps: list[str] = Field(default_factory=list)
     error: str | None = None
-    artifacts: dict[str, list] = {}
+    artifacts: dict[str, list] = Field(default_factory=dict)
     created_at: str
     completed_at: str | None = None
 
