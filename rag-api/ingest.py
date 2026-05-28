@@ -3,8 +3,13 @@ ingest.py — Pipeline nạp tài liệu vào Qdrant và Neo4j cho YAN RAG stack
 
 Quy trình xử lý
 -----------------
-  load_documents()   →  split_documents()  →  embed (OllamaEmbeddings)
-  →  upsert (Qdrant)  →  save_graph (Neo4j, tùy chọn)
+  load_documents() [song song, ThreadPoolExecutor]
+  →  split_documents()
+  →  _run_async_pipeline() [asyncio + httpx trực tiếp đến Ollama /api/embed]
+       • asyncio.gather: toàn bộ batch submit đồng thời
+       • Semaphore giới hạn request đồng thời = INGEST_EMBED_WORKERS
+       • AsyncQdrantClient: upsert không blocking
+  →  save_graph (Neo4j, tùy chọn)
 
 Idempotency
 -----------
@@ -23,21 +28,23 @@ Graph enrichment (tùy chọn)
   Nếu GRAPH_ENTITY_EXTRACTION=true, LLM sẽ trích xuất thực thể và lưu quan hệ MENTIONS.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import uuid
 from collections.abc import Iterable
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
 from langchain_core.documents import Document
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient, QdrantClient
 from qdrant_client.http.models import Distance, PointStruct, VectorParams
 
 
@@ -67,8 +74,8 @@ EMBEDDING_MODEL = _require_env("EMBEDDING_MODEL")
 CHUNK_SIZE = int(_require_env("CHUNK_SIZE"))
 CHUNK_OVERLAP = int(_require_env("CHUNK_OVERLAP"))
 UPSERT_BATCH_SIZE = int(_require_env("UPSERT_BATCH_SIZE"))
-# Số embed worker song song gửi đến Ollama.
-# Nên = OLLAMA_NUM_PARALLEL; mặc định 1 (an toàn cho GPU 6GB).
+# Số batch embed/upsert chạy đồng thời trong async pipeline.
+# Đặt bằng OLLAMA_NUM_PARALLEL để khai thác tối đa GPU; mặc định 1 (an toàn cho GPU 6 GB).
 INGEST_EMBED_WORKERS: int = max(1, int(os.environ.get("INGEST_EMBED_WORKERS", "1")))
 
 GRAPH_ENABLED: bool = os.environ.get("GRAPH_ENABLED", "true").lower() == "true"
@@ -138,9 +145,40 @@ def _safe_load_text(path: Path) -> list[Document]:
     raise RuntimeError(f"Cannot load text file {path}: {last_error}")
 
 
+def _load_single_file(path: Path, root: Path) -> list[Document]:
+    """Tải một file và gắn metadata. Trả về [] nếu không hỗ trợ hoặc lỗi."""
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".pdf":
+            loaded = PyPDFLoader(str(path)).load()
+        elif suffix == ".docx":
+            loaded = Docx2txtLoader(str(path)).load()
+        elif suffix in SUPPORTED_TEXT_EXTENSIONS:
+            loaded = _safe_load_text(path)
+        else:
+            logger.info("Skipping unsupported file: %s", path)
+            return []
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to load file: %s", path)
+        return []
+
+    relative_path = str(path.relative_to(root)) if path.is_relative_to(root) else path.name
+    for index, doc in enumerate(loaded):
+        doc.metadata.update(
+            {
+                "source_file": path.name,
+                "source_path": str(path),
+                "relative_path": relative_path,
+                "file_type": suffix.replace(".", ""),
+                "loader_index": index,
+            }
+        )
+    return loaded
+
+
 def load_documents(raw_data_dir: str = RAW_DATA_DIR) -> list[Document]:
     """
-    Tải tất cả file được hỗ trợ từ *raw_data_dir*.
+    Tải tất cả file được hỗ trợ từ *raw_data_dir* song song (ThreadPoolExecutor).
 
     Phương pháp tải theo đuôi file:
       .pdf   → PyPDFLoader (mỗi trang = 1 Document)
@@ -160,41 +198,16 @@ def load_documents(raw_data_dir: str = RAW_DATA_DIR) -> list[Document]:
         logger.warning("Raw data directory does not exist: %s", root)
         return docs
 
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
+    file_paths = sorted(p for p in root.rglob("*") if p.is_file())
+    if not file_paths:
+        logger.info("Loaded document units: 0")
+        return docs
 
-        suffix = path.suffix.lower()
-
-        try:
-            if suffix == ".pdf":
-                loaded = PyPDFLoader(str(path)).load()
-            elif suffix == ".docx":
-                loaded = Docx2txtLoader(str(path)).load()
-            elif suffix in SUPPORTED_TEXT_EXTENSIONS:
-                loaded = _safe_load_text(path)
-            else:
-                logger.info("Skipping unsupported file: %s", path)
-                continue
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to load file: %s", path)
-            continue
-
-        relative_path = str(path.relative_to(
-            root)) if path.is_relative_to(root) else path.name
-
-        for index, doc in enumerate(loaded):
-            doc.metadata.update(
-                {
-                    "source_file": path.name,
-                    "source_path": str(path),
-                    "relative_path": relative_path,
-                    "file_type": suffix.replace(".", ""),
-                    "loader_index": index,
-                }
-            )
-
-        docs.extend(loaded)
+    max_workers = min(8, len(file_paths))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="loader") as pool:
+        futures = [pool.submit(_load_single_file, p, root) for p in file_paths]
+        for f in futures:
+            docs.extend(f.result())
 
     logger.info("Loaded document units: %s", len(docs))
     return docs
@@ -300,6 +313,118 @@ def get_embeddings() -> OllamaEmbeddings:
     )
 
 
+async def _embed_and_upsert_batch_async(
+    http_client: httpx.AsyncClient,
+    qdrant: AsyncQdrantClient,
+    sem: asyncio.Semaphore,
+    batch_no: int,
+    total_batches: int,
+    chunk_batch: list[Document],
+    collection_name: str,
+    project: str,
+) -> list[tuple]:
+    """
+    Embed một batch qua Ollama /api/embed rồi upsert vào Qdrant.
+    Semaphore giới hạn số batch chạy đồng thời = INGEST_EMBED_WORKERS.
+    """
+    async with sem:
+        texts = [c.page_content for c in chunk_batch]
+        logger.info("Embed %s/%s: %s chunks...", batch_no, total_batches, len(texts))
+        resp = await http_client.post(
+            f"{OLLAMA_BASE_URL}/api/embed",
+            json={"model": EMBEDDING_MODEL, "input": texts},
+        )
+        resp.raise_for_status()
+        vectors = resp.json()["embeddings"]
+
+        _now = datetime.now(timezone.utc).isoformat()
+        points = [
+            PointStruct(
+                id=make_point_id(chunk),
+                vector=vector,
+                payload={
+                    **chunk.metadata,
+                    "page_content": chunk.page_content,
+                    "project": project,
+                    "module": _infer_module(
+                        chunk.metadata.get("relative_path", ""), project
+                    ),
+                    "doc_type": _infer_doc_type(
+                        chunk.metadata.get("source_file", ""),
+                        chunk.metadata.get("relative_path", ""),
+                    ),
+                    "chunk_type": _infer_chunk_type(chunk.page_content),
+                    "language": "vi",
+                    "status": "active",
+                    "created_at": _now,
+                },
+            )
+            for chunk, vector in zip(chunk_batch, vectors)
+        ]
+
+        await qdrant.upsert(collection_name=collection_name, points=points, wait=True)
+        logger.info("Upsert done %s/%s | %s chunks", batch_no, total_batches, len(points))
+        return [(c, str(p.id)) for c, p in zip(chunk_batch, points)]
+
+
+async def _run_async_pipeline(
+    chunks: list[Document],
+    collection_name: str,
+    project: str,
+    reset: bool,
+) -> tuple[list[tuple], int]:
+    """
+    Async embed + upsert pipeline: INGEST_EMBED_WORKERS batch chạy đồng thời.
+
+    Cách hoạt động:
+      • asyncio.gather gửi tất cả batch cùng lúc.
+      • Semaphore giới hạn Ollama request đồng thời = INGEST_EMBED_WORKERS.
+      • Embed và upsert của mỗi batch chạy nối tiếp trong cùng coroutine,
+        nhưng nhiều batch chạy song song → GPU và Qdrant luôn bận.
+      • Tăng INGEST_EMBED_WORKERS = OLLAMA_NUM_PARALLEL để khai thác tối đa.
+    """
+    timeout = httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as http_client:
+        # Phát hiện kích thước vector từ model embedding
+        sample_resp = await http_client.post(
+            f"{OLLAMA_BASE_URL}/api/embed",
+            json={"model": EMBEDDING_MODEL, "input": ["health check"]},
+        )
+        sample_resp.raise_for_status()
+        sample_vector = sample_resp.json()["embeddings"][0]
+
+        sync_client = QdrantClient(url=QDRANT_URL)
+        if reset and sync_client.collection_exists(collection_name):
+            logger.warning("Deleting collection before reset: %s", collection_name)
+            sync_client.delete_collection(collection_name)
+        _ensure_collection(sync_client, collection_name, vector_size=len(sample_vector))
+
+        qdrant = AsyncQdrantClient(url=QDRANT_URL)
+        sem = asyncio.Semaphore(INGEST_EMBED_WORKERS)
+        chunk_batches = list(batched(chunks, UPSERT_BATCH_SIZE))
+        total_batches = len(chunk_batches)
+
+        logger.info(
+            "Async pipeline: %s batches, batch_size=%s, concurrency=%s",
+            total_batches, UPSERT_BATCH_SIZE, INGEST_EMBED_WORKERS,
+        )
+
+        tasks = [
+            _embed_and_upsert_batch_async(
+                http_client, qdrant, sem,
+                i + 1, total_batches, batch,
+                collection_name, project,
+            )
+            for i, batch in enumerate(chunk_batches)
+        ]
+        results = await asyncio.gather(*tasks)
+        await qdrant.close()
+
+    all_pairs: list[tuple] = [pair for pairs in results for pair in pairs]
+    count = sync_client.count(collection_name=collection_name, exact=True)
+    return all_pairs, count.count
+
+
 # ── Helpers suy luận metadata chunk ──────────────────────────────────────────
 
 _DOC_TYPE_PATTERNS: list[tuple[str, str]] = [
@@ -328,14 +453,13 @@ _DOC_TYPE_PATTERNS: list[tuple[str, str]] = [
 
 def _infer_module(relative_path: str, project: str) -> str:
     """
-    Trích xuất tên module từ cấu trúc thư mục tương đối.
-    project/module/file.md  → trả về module.
-    file.md (phẳng)         → trả về project.
+    Trích xuất tên module từ cấu trúc thư mục tương đối với project dir.
+    module/file.md            → trả về module (thư mục cấp một).
+    module/subdir/file.md     → trả về module (thư mục cấp một).
+    file.md (phẳng)           → trả về project.
     """
     parts = Path(relative_path).parts
-    if len(parts) >= 3:
-        return parts[1]
-    if len(parts) == 2 and not Path(parts[0]).suffix:
+    if len(parts) >= 2 and not Path(parts[0]).suffix:
         return parts[0]
     return project
 
@@ -421,12 +545,6 @@ def _ingest_project(project: str, reset: bool = False) -> dict:
         }
 
     chunks = split_documents(docs)
-    embeddings = get_embeddings()
-    client = QdrantClient(url=QDRANT_URL)
-
-    if reset and client.collection_exists(collection_name):
-        logger.warning("Deleting collection before reset: %s", collection_name)
-        client.delete_collection(collection_name)
 
     if reset and GRAPH_ENABLED and _graph_module is not None:
         try:
@@ -434,90 +552,11 @@ def _ingest_project(project: str, reset: bool = False) -> dict:
         except Exception as exc:
             logger.warning("Graph delete failed (non-fatal): %s", exc)
 
-    logger.info("Creating sample embedding to detect vector size...")
-    sample_vector = embeddings.embed_query("health check")
-    _ensure_collection(client, collection_name, vector_size=len(sample_vector))
-
-    total_upserted = 0
-    # (chunk, qdrant_point_id) — dùng để lưu vào Neo4j graph
-    all_pairs: list[tuple] = []
-
-    chunk_batches = list(batched(chunks, UPSERT_BATCH_SIZE))
-    total_batches = len(chunk_batches)
-
-    # Pipeline: embed[N] chạy song song với upsert[N-1] vào Qdrant.
-    # INGEST_EMBED_WORKERS=1 phù hợp OLLAMA_NUM_PARALLEL=1 (GPU 6GB).
-    # Tăng cả hai lên 2-4 nếu nâng cấp GPU / dùng embedding model riêng.
-    with ThreadPoolExecutor(
-        max_workers=INGEST_EMBED_WORKERS + 1,  # +1 slot dành cho upsert
-        thread_name_prefix="rag",
-    ) as pool:
-        # Nộp toàn bộ embed task lên pool; pool tự giới hạn INGEST_EMBED_WORKERS luồng.
-        embed_futures: list[Future] = [
-            pool.submit(embeddings.embed_documents, [c.page_content for c in batch])
-            for batch in chunk_batches
-        ]
-
-        upsert_future: Future | None = None
-
-        for batch_no, (chunk_batch, embed_future) in enumerate(
-            zip(chunk_batches, embed_futures), start=1
-        ):
-            logger.info(
-                "Embed %s/%s: %s chunks...", batch_no, total_batches, len(chunk_batch)
-            )
-            vectors = embed_future.result()
-
-            _now = datetime.now(timezone.utc).isoformat()
-            points = [
-                PointStruct(
-                    id=make_point_id(chunk),
-                    vector=vector,
-                    payload={
-                        **chunk.metadata,
-                        "page_content": chunk.page_content,
-                        "project": project,
-                        "module": _infer_module(
-                            chunk.metadata.get("relative_path", ""), project
-                        ),
-                        "doc_type": _infer_doc_type(
-                            chunk.metadata.get("source_file", ""),
-                            chunk.metadata.get("relative_path", ""),
-                        ),
-                        "chunk_type": _infer_chunk_type(chunk.page_content),
-                        "language": "vi",
-                        "status": "active",
-                        "created_at": _now,
-                    },
-                )
-                for chunk, vector in zip(chunk_batch, vectors)
-            ]
-
-            # Chờ upsert batch trước hoàn tất (đã chạy song song với embed này)
-            if upsert_future is not None:
-                upsert_future.result()
-
-            all_pairs.extend(zip(chunk_batch, [str(p.id) for p in points]))
-            total_upserted += len(points)
-
-            # Nộp upsert batch này vào pool — chạy song song với embed batch tiếp theo
-            upsert_future = pool.submit(
-                client.upsert,
-                collection_name=collection_name,
-                points=points,
-                wait=True,
-            )
-            logger.info(
-                "Upsert queued %s/%s | indexed %s/%s chunks",
-                batch_no, total_batches, total_upserted, len(chunks),
-            )
-
-        # Đảm bảo upsert batch cuối hoàn tất
-        if upsert_future is not None:
-            upsert_future.result()
-
-    count_result = client.count(collection_name=collection_name, exact=True)
-    logger.info("Project '%s' done. Points: %s", project, count_result.count)
+    # Async pipeline: embed + upsert INGEST_EMBED_WORKERS batch đồng thời
+    all_pairs, points_count = asyncio.run(
+        _run_async_pipeline(chunks, collection_name, project, reset)
+    )
+    logger.info("Project '%s' done. Points: %s", project, points_count)
 
     # ── Tích hợp Neo4j graph ──────────────────────────────────────────────────
     graph_chunks_saved = 0
@@ -560,8 +599,8 @@ def _ingest_project(project: str, reset: bool = False) -> dict:
         "status": "ok",
         "documents": len(docs),
         "chunks": len(chunks),
-        "upserted": total_upserted,
-        "points_count": count_result.count,
+        "upserted": len(all_pairs),
+        "points_count": points_count,
         "graph_chunks_saved": graph_chunks_saved,
         "idempotent": True,
         "reset": reset,

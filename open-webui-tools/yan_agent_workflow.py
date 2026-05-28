@@ -2,7 +2,7 @@
 title: YAN SDLC Agent Workflow
 author: YAN
 description: >
-  Khởi chạy SDLC Agent Workflow 13 bước: BA → PM → SA → TA → Designer → FE → Mobile → BE → DBA → DA → Tech Lead → Tester → DevSecOps.
+  Khởi chạy SDLC Agent Workflow 13 bước: BA → PM → SA → TA → Designer → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps.
   Hỗ trợ chạy full workflow (async + polling) hoặc từng agent đơn lẻ (sync).
 required_open_webui_version: 0.3.0
 requirements: requests
@@ -23,8 +23,8 @@ _VALID_ROLES = [
     "designer",
     "fe",
     "mobile",
-    "be",
     "dba",
+    "be",
     "da",
     "tech_lead",
     "tester",
@@ -102,13 +102,15 @@ class Tools:
         self,
         user_input: str,
         project: str | None = None,
+        tech_stack: str | None = None,
     ) -> str:
         """
-        Chạy toàn bộ SDLC Workflow 13 bước (BA → PM → SA → TA → Designer → FE → Mobile → BE → DBA → DA → Tech Lead → Tester → DevSecOps).
+        Chạy toàn bộ SDLC Workflow 13 bước (BA → PM → SA → TA → Designer → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps).
         Mỗi agent nhận output đã cắt ngắn của các agent phụ thuộc và bổ sung RAG context từ knowledge base.
 
         :param user_input: Mô tả business goal / feature / project cần phân tích và implement
         :param project: Tên project RAG cần filter (ví dụ: 'yanlib'). Để trống để search tất cả.
+        :param tech_stack: Các công nghệ bắt buộc, phân cách bằng dấu phẩy (ví dụ: 'nextjs,nestjs,mongodb'). Để trống nếu không cần chỉ định.
         :return: Tóm tắt kết quả từng step hoặc link để xem chi tiết
         """
         resolved_project = project or self.valves.default_project
@@ -119,6 +121,8 @@ class Tools:
         }
         if resolved_project:
             payload["project"] = resolved_project
+        if tech_stack:
+            payload["tech_stack"] = [t.strip() for t in tech_stack.split(",") if t.strip()]
 
         # Submit workflow
         try:
@@ -196,6 +200,7 @@ class Tools:
         user_input: str,
         extra_context: str | None = None,
         project: str | None = None,
+        tech_stack: str | None = None,
     ) -> str:
         """
         Chạy một agent step đơn lẻ (không cần chạy full workflow).
@@ -205,6 +210,7 @@ class Tools:
         :param user_input: Business goal / context đầu vào cho agent
         :param extra_context: Context bổ sung (ví dụ: output từ step trước dán vào)
         :param project: RAG project filter. Để trống để search tất cả.
+        :param tech_stack: Các công nghệ bắt buộc, phân cách bằng dấu phẩy (ví dụ: 'nextjs,nestjs,mongodb').
         :return: Output của agent role được chọn
         """
         if role not in _VALID_ROLES:
@@ -223,6 +229,8 @@ class Tools:
             payload["project"] = resolved_project
         if extra_context:
             payload["extra_context"] = extra_context
+        if tech_stack:
+            payload["tech_stack"] = [t.strip() for t in tech_stack.split(",") if t.strip()]
 
         try:
             resp = requests.post(
