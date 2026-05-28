@@ -4,6 +4,13 @@ services:
     container_name: ollama
     pull_policy: if_not_present
     tty: true
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
     ports:
       - "11434:11434"
     volumes:
@@ -30,6 +37,8 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -42,6 +51,8 @@ services:
   neo4j:
     image: neo4j:5-community
     container_name: neo4j
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -159,6 +170,8 @@ services:
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "${OPEN_WEBUI_PORT}:${OPEN_WEBUI_PORT}"
     volumes:
@@ -201,6 +214,7 @@ services:
       WATCHTOWER_SCHEDULE: ${WATCHTOWER_SCHEDULE}
       WATCHTOWER_HTTP_API_METRICS: ${WATCHTOWER_HTTP_API_METRICS}
       WATCHTOWER_HTTP_API_TOKEN: ${WATCHTOWER_HTTP_API_TOKEN}
+      WATCHTOWER_LABEL_ENABLE: "true"
     networks:
       - yan
     restart: unless-stopped
@@ -208,6 +222,8 @@ services:
   deunhealth:
     image: qmcgaw/deunhealth
     container_name: deunhealth
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
