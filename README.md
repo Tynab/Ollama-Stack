@@ -1,6 +1,6 @@
 # YAN Ollama Stack
 
-Local AI stack chạy hoàn toàn offline: **Ollama** (LLM inference) + **Qdrant** (vector DB) + **Neo4j** (graph DB) + **RAG API** (FastAPI) + **Agent API** (SDLC AI orchestrator) + **Open WebUI** (chat UI) + **Watchtower** (auto-update) + **Deunhealth** (container health watchdog).
+Nền tảng AI cục bộ vận hành hoàn toàn offline: **Ollama** (suy luận LLM), **Qdrant** (vector DB), **Neo4j** (graph DB), **RAG API** (FastAPI), **Agent API** (điều phối SDLC), **Open WebUI** (chat UI), **Watchtower** (tự động cập nhật), và **Deunhealth** (giám sát healthcheck container).
 
 ---
 
@@ -12,20 +12,21 @@ Local AI stack chạy hoàn toàn offline: **Ollama** (LLM inference) + **Qdrant
 | `qdrant`     | `qdrant/qdrant:latest`             | 6333 / 6334   | Vector database (REST / gRPC)                          |
 | `neo4j`      | `neo4j:5-community`                | 7474 / 7687   | Knowledge graph (Neo4j Browser / Bolt)                 |
 | `rag-api`    | build `./rag-api`                  | 8090          | FastAPI RAG service (ingest + ask)                     |
-| `agent-api`  | build `./agent-api`                  | 8091          | FastAPI SDLC Agent Orchestrator (13-step SDLC workflow) |
+| `agent-api`  | build `./agent-api`                  | 8091          | FastAPI SDLC Agent Orchestrator (14-step SDLC workflow) |
 | `open-webui` | `ghcr.io/open-webui/open-webui`    | 8085          | Chat UI kết nối Ollama & Qdrant                        |
 | `watchtower` | `containrrr/watchtower`            | —             | Tự động pull & restart image mới nhất                 |
-| `deunhealth` | `qmcgaw/deunhealth`                | 9999          | Restart container khi healthcheck fail                 |
+| `deunhealth` | `qmcgaw/deunhealth`                | 9999          | Khởi động lại container khi healthcheck thất bại       |
 
-**Models mặc định** (cấu hình trong `.env` → section `SDLC Agent Models`):
+**Model theo biến môi trường** (cấu hình trong `.env` → mục `SDLC Agent Models`):
 
-| Mục đích                                    | Env var(s)                                                        | Model production          |
+| Mục đích                                    | Env var(s)                                                        | Giá trị                   |
 |---------------------------------------------|-------------------------------------------------------------------|---------------------------|
-| Embedding                                   | `EMBEDDING_MODEL`                                                 | `qwen3-embedding:8b`      |
-| Chat — RAG API `/ask`                        | `CHAT_MODEL`                                                      | `qwen2.5-coder:14b`       |
-| Reasoning agents (BA / PM / SA / TA / DA)   | `BA_MODEL` `PM_MODEL` `SA_MODEL` `TA_MODEL` `DA_MODEL`            | `qwen3.6:35b`             |
-| Coding agents (FE / Mobile / BE / DBA / Tech Lead / DevSecOps) | `FE_MODEL` `MOBILE_MODEL` `BE_MODEL` `DBA_MODEL` `TECH_LEAD_MODEL` `DEVSECOPS_MODEL` | `qwen3-coder-next` |
-| Creative agents (Tester / Designer)         | `TESTER_MODEL` `DESIGNER_MODEL`                                   | `qwen3.5:35b`             |
+| Embedding                                   | `EMBEDDING_MODEL`                                                 | Lấy từ `.env`             |
+| Chat — RAG API `/ask`                        | `CHAT_MODEL`                                                      | Lấy từ `.env`             |
+| Reasoning agents (BA / PM / SA / TA / DA)   | `BA_MODEL` `PM_MODEL` `SA_MODEL` `TA_MODEL` `DA_MODEL`            | Lấy từ `.env`             |
+| Team Lead planning agent                    | `TL_MODEL`                                                        | Lấy từ `.env`             |
+| Coding agents (FE / Mobile / BE / DBA / Tech Lead / DevSecOps) | `FE_MODEL` `MOBILE_MODEL` `BE_MODEL` `DBA_MODEL` `TECH_LEAD_MODEL` `DEVSECOPS_MODEL` | Lấy từ `.env` |
+| Creative agents (Tester / Designer)         | `TESTER_MODEL` `DESIGNER_MODEL`                                   | Lấy từ `.env`             |
 
 > **Lưu ý:** Đổi `EMBEDDING_MODEL` yêu cầu re-ingest toàn bộ documents (`POST /ingest {"reset": true}`).
 
@@ -42,14 +43,14 @@ User → Open WebUI (8085)
          │                                       └── Ollama (embedding + chat)
          │
          └── yan_agent_workflow.py  →  Agent API (8091)
-                                           ├── LangGraph SDLC Workflow (13 bước)
-                                           │     BA → PM → SA → TA → Designer
+                                           ├── LangGraph SDLC Workflow (14 bước)
+                                           │     BA → PM → SA → TA → Designer → Team Lead
                                            │     → FE → Mobile → DBA → BE → DA
                                            │     → Tech Lead → Tester → DevSecOps
                                            └── Ollama (per-role models)
 ```
 
-### SDLC Workflow (13 bước)
+### SDLC Workflow (14 bước)
 
 | Bước | Role            | Tên                                          | Model             | Phụ thuộc                              |
 |------|-----------------|----------------------------------------------|-------------------|----------------------------------------|
@@ -58,16 +59,17 @@ User → Open WebUI (8085)
 | 3    | `sa`            | SA — Kiến trúc giải pháp                    | SA_MODEL          | ba, pm                                 |
 | 4    | `ta`            | TA — Kiến trúc kỹ thuật                     | TA_MODEL          | ba, sa                                 |
 | 5    | `designer`      | Designer — Thiết kế UI/UX                   | DESIGNER_MODEL    | ba, sa, ta                             |
-| 6    | `fe`            | FE — Kỹ thuật Frontend                      | FE_MODEL          | ba, sa, ta, designer                   |
-| 7    | `mobile`        | Mobile — Phát triển Mobile                  | MOBILE_MODEL      | ba, sa, ta, designer                   |
-| 8    | `dba`           | DBA — Kiến trúc cơ sở dữ liệu              | DBA_MODEL         | ba, sa, ta                             |
-| 9    | `be`            | BE — Triển khai Backend                     | BE_MODEL          | ba, sa, ta, fe, mobile, dba            |
-| 10   | `da`            | DA — Phân tích & Báo cáo dữ liệu           | DA_MODEL          | ba, sa, dba                            |
-| 11   | `tech_lead`     | Tech Lead — Review code & Tiêu chuẩn        | TECH_LEAD_MODEL   | sa, fe, mobile, be, dba                |
-| 12   | `tester`        | Tester — Kiểm thử & Đảm bảo chất lượng    | TESTER_MODEL      | be, fe, mobile, tech_lead, designer    |
-| 13   | `devsecops`     | DevSecOps — Hạ tầng, CI/CD & Bảo mật       | DEVSECOPS_MODEL   | sa, ta, tech_lead, tester              |
+| 6    | `tl`            | Team Lead — Lập kế hoạch task kỹ thuật      | TL_MODEL          | ba, sa, ta, designer                   |
+| 7    | `fe`            | FE — Kỹ thuật Frontend                      | FE_MODEL          | ba, sa, ta, designer, tl               |
+| 8    | `mobile`        | Mobile — Phát triển Mobile                  | MOBILE_MODEL      | ba, sa, ta, designer, tl               |
+| 9    | `dba`           | DBA — Kiến trúc cơ sở dữ liệu              | DBA_MODEL         | ba, sa, ta, tl                         |
+| 10   | `be`            | BE — Triển khai Backend                     | BE_MODEL          | ba, sa, ta, fe, mobile, dba, tl        |
+| 11   | `da`            | DA — Phân tích & Báo cáo dữ liệu           | DA_MODEL          | ba, sa, dba                            |
+| 12   | `tech_lead`     | Tech Lead — Review code & Tiêu chuẩn        | TECH_LEAD_MODEL   | sa, fe, mobile, be, dba                |
+| 13   | `tester`        | Tester — Kiểm thử & Đảm bảo chất lượng    | TESTER_MODEL      | be, fe, mobile, tech_lead, designer    |
+| 14   | `devsecops`     | DevSecOps — Hạ tầng, CI/CD & Bảo mật       | DEVSECOPS_MODEL   | sa, ta, tech_lead, tester              |
 
-Mỗi bước nhận truncated output của các bước phụ thuộc và tùy chọn RAG context từ knowledge base.
+Mỗi bước nhận output đã rút gọn từ các bước phụ thuộc và có thể bổ sung context từ RAG knowledge base.
 
 ### Kiến trúc hybrid RAG
 
@@ -112,7 +114,7 @@ Mỗi SDLC agent có `rag_query_hint` riêng để xây dựng câu truy vấn R
 - **BA**: tìm *"yêu cầu chức năng, user story, acceptance criteria, quy tắc nghiệp vụ"*
 - **SA**: tìm *"kiến trúc hệ thống, API contracts, data model, tích hợp, pattern, bảo mật"*
 
-Điều này cải thiện độ chính xác retrieval cho từng chân SDLC mà không cần sửa `user_input`.
+Thiết kế này cải thiện độ chính xác truy xuất cho từng vai trò SDLC mà không cần thay đổi `user_input`.
 
 ### Episodic Memory Logging
 
@@ -129,8 +131,8 @@ Mỗi dòng là một JSON object:
   "workflow_id": "a1b2c3d4-...",
   "project": "yanlib",
   "user_input": "Xây dựng checkout flow...",
-  "completed_steps": ["ba","pm","sa","ta","designer","fe","mobile","dba","be","da","tech_lead","tester","devsecops"],
-  "steps_count": 13,
+  "completed_steps": ["ba","pm","sa","ta","designer","tl","fe","mobile","dba","be","da","tech_lead","tester","devsecops"],
+  "steps_count": 14,
   "status": "completed",
   "error": null,
   "duration_seconds": 842.5,
@@ -138,7 +140,7 @@ Mỗi dòng là một JSON object:
 }
 ```
 
-File này có thể dùng làm dataset để fine-tune, phân tích hiệu suất, hoặc feed vào các workflow tiếp theo làm context lịch sử.
+File này có thể dùng làm dataset cho fine-tune, phân tích hiệu suất, hoặc làm context lịch sử cho các workflow kế tiếp.
 
 ### Input Sanitization
 
@@ -150,9 +152,12 @@ Giá trị sau sanitize được lưu vào `WorkflowRecord` và log.
 
 
 
+## Yêu cầu hệ thống
+
+
 - Docker Desktop (Windows) hoặc Docker Engine + Compose plugin (Linux/Mac)
-- RAM ≥ 32 GB (cho SDLC agents với model 35B; ≥ 16 GB cho RAG only)
-- GPU NVIDIA với CUDA drivers (khuyến nghị; CPU fallback hoạt động nhưng chậm)
+- Tài nguyên CPU/RAM/GPU phù hợp với model và mức tải bạn cấu hình trong `.env`
+- Nếu bật GPU: cài driver và runtime container tương thích trên máy host
 
 ---
 
@@ -181,8 +186,8 @@ Ollama-Stack/
 │   └── Dockerfile
 ├── agent-api/
 │   ├── app.py                    # FastAPI SDLC Agent Orchestrator API
-│   ├── agents.py                 # 13 cấu hình agent (model, system prompt, deps, rag_query_hint)
-│   ├── workflow.py               # LangGraph StateGraph — 13-bước SDLC workflow
+│   ├── agents.py                 # 14 cấu hình agent (model, system prompt, deps, rag_query_hint)
+│   ├── workflow.py               # LangGraph StateGraph — 14-bước SDLC workflow
 │   ├── requirements.txt
 │   └── Dockerfile
 └── open-webui-tools/
@@ -202,7 +207,7 @@ Nhờ đó `/ask` có thể lọc kết quả theo module để tăng độ chí
 
 ---
 
-## Lần đầu chạy
+## Thiết lập ban đầu
 
 ### 1. Chuẩn bị `.env`
 
@@ -210,31 +215,38 @@ Nhờ đó `/ask` có thể lọc kết quả theo module để tăng độ chí
 cat .env
 ```
 
-Các biến quan trọng cần xem lại:
+Các biến quan trọng cần kiểm tra:
 
 ```env
 # ─── SDLC Agent Models ───────────────────────────────────────────────────────
-# Thay đổi model ở đây → restart agent-api (không cần rebuild)
-EMBEDDING_MODEL=qwen3-embedding:8b
+# Thay đổi model tại đây rồi restart service tương ứng (không cần rebuild)
+EMBEDDING_MODEL=<embedding_model>
+CHAT_MODEL=<chat_model>
+CODING_PLANNER_MODEL=<coding_planner_model>
+
 # Reasoning agents (BA / PM / SA / TA / DA)
-BA_MODEL=qwen3.6:35b
-PM_MODEL=qwen3.6:35b
-SA_MODEL=qwen3.6:35b
-TA_MODEL=qwen3.6:35b
-DA_MODEL=qwen3.6:35b
+BA_MODEL=<ba_model>
+PM_MODEL=<pm_model>
+SA_MODEL=<sa_model>
+TA_MODEL=<ta_model>
+DA_MODEL=<da_model>
+
+# Team Lead planning agent
+TL_MODEL=<tl_model>
+
 # Coding agents (FE / Mobile / BE / DBA / Tech Lead / DevSecOps)
-FE_MODEL=qwen3-coder-next
-MOBILE_MODEL=qwen3-coder-next
-BE_MODEL=qwen3-coder-next
-DBA_MODEL=qwen3-coder-next
-TECH_LEAD_MODEL=qwen3-coder-next
-DEVSECOPS_MODEL=qwen3-coder-next
-# Creative/Tester agents (Designer / Tester)
-DESIGNER_MODEL=qwen3.5:35b
-TESTER_MODEL=qwen3.5:35b
+FE_MODEL=<fe_model>
+MOBILE_MODEL=<mobile_model>
+BE_MODEL=<be_model>
+DBA_MODEL=<dba_model>
+TECH_LEAD_MODEL=<tech_lead_model>
+DEVSECOPS_MODEL=<devsecops_model>
+
+# Creative/Test agents
+DESIGNER_MODEL=<designer_model>
+TESTER_MODEL=<tester_model>
 
 # ─── RAG API ─────────────────────────────────────────────────────────────────
-CHAT_MODEL=qwen2.5-coder:14b    # model dùng cho /ask response
 RAG_TOP_K=4
 
 # ─── Agent API ───────────────────────────────────────────────────────────────
@@ -246,17 +258,16 @@ NEO4J_PASSWORD=changeme_in_production
 WATCHTOWER_HTTP_API_TOKEN=...
 
 # ─── Ollama performance ───────────────────────────────────────────────────────
-OLLAMA_MAX_LOADED_MODELS=4      # số model giữ trong VRAM cùng lúc
-OLLAMA_CONTEXT_LENGTH=32768     # context window (tokens) cho mỗi LLM call trong agent-api
-OLLAMA_REQUEST_TIMEOUT=1200     # timeout (giây) cho Ollama LLM call trong agent-api (rag-api dùng 600)
-RAG_TIMEOUT=120                  # timeout (giây) cho mỗi lần gọi RAG /ask trong workflow
-CODING_PLANNER_MODEL=granite3.3:2b  # model nhỏ dùng để lập danh sách file trước khi sinh code
-MAX_FILES_PER_ROLE=6            # số file tối đa mỗi coding agent được sinh trong 1 workflow run
+OLLAMA_MAX_LOADED_MODELS=<max_loaded_models>   # số model giữ đồng thời
+OLLAMA_NUM_PARALLEL=<num_parallel_requests>    # số request Ollama xử lý song song
+OLLAMA_KEEP_ALIVE=<model_keep_alive>           # thời gian giữ model trong bộ nhớ
+OLLAMA_CONTEXT_LENGTH=<context_length_tokens>  # context window cho mỗi LLM call trong agent-api
+OLLAMA_REQUEST_TIMEOUT=<timeout_seconds>       # timeout cho Ollama call trong agent-api
+MAX_FILES_PER_ROLE=<max_files_per_role>        # số file tối đa mỗi coding agent sinh trong 1 workflow run
 
 # Số batch embed/upsert chạy đồng thời khi ingest (asyncio pipeline).
-# Đặt bằng OLLAMA_NUM_PARALLEL để khai thác tối đa GPU.
-# GPU 6 GB → 1 | GPU 12 GB → 2 | GPU 24 GB+ → 3-4
-INGEST_EMBED_WORKERS=1
+# Nên điều chỉnh theo tài nguyên thực tế và mức song song mong muốn.
+INGEST_EMBED_WORKERS=<ingest_embed_workers>
 ```
 
 ### 2. Khởi động stack
@@ -265,7 +276,7 @@ INGEST_EMBED_WORKERS=1
 docker compose up -d
 ```
 
-Lần đầu sẽ pull tất cả images (~vài GB). Theo dõi:
+Lần khởi động đầu tiên sẽ pull toàn bộ image (dung lượng có thể vài GB). Theo dõi bằng:
 
 ```bash
 docker compose logs -f
@@ -274,31 +285,22 @@ docker compose logs -f
 ### 3. Pull models Ollama
 
 ```bash
-# Embedding
-docker exec ollama ollama pull qwen3-embedding:8b
-
-# Chat (RAG API)
-docker exec ollama ollama pull qwen2.5-coder:14b
-
-# SDLC Agents — reasoning (BA / PM / SA / TA / DA)
-docker exec ollama ollama pull qwen3.6:35b
-
-# SDLC Agents — coding (FE / Mobile / BE / DBA / Tech Lead / DevSecOps)
-docker exec ollama ollama pull qwen3-coder-next
-
-# SDLC Agents — creative/tester (Designer / Tester)
-docker exec ollama ollama pull qwen3.5:35b
+# Pull tất cả model đang khai báo trong .env (loại trùng tự động)
+grep -E '^(EMBEDDING_MODEL|CHAT_MODEL|CODING_PLANNER_MODEL|BA_MODEL|PM_MODEL|SA_MODEL|TA_MODEL|DA_MODEL|TL_MODEL|FE_MODEL|MOBILE_MODEL|BE_MODEL|DBA_MODEL|TECH_LEAD_MODEL|DEVSECOPS_MODEL|TESTER_MODEL|DESIGNER_MODEL)=' .env \
+  | cut -d= -f2 \
+  | sort -u \
+  | xargs -I {} docker exec ollama ollama pull "{}"
 ```
 
-Kiểm tra models đã có:
+Xác nhận các model đã sẵn sàng:
 
 ```bash
 docker exec ollama ollama list
 ```
 
-### Tổ chức tài liệu
+### 4. Tổ chức tài liệu
 
-Đặt file vào subfolder theo project (và tùy chọn theo module):
+Đặt tài liệu vào thư mục con theo project (và tùy chọn theo module):
 
 ```
 data/raw/yanlib/auth/auth-prd.md          # module=auth
@@ -306,7 +308,7 @@ data/raw/yanlib/billing/billing-plans.md  # module=billing
 data/raw/yanlib/marketplace-schema.md     # module=yanlib (flat)
 ```
 
-Hoặc để flat nếu không cần lọc theo module:
+Hoặc dùng cấu trúc phẳng nếu không cần lọc theo module:
 
 ```
 data/raw/myproject/spec-v1.md
@@ -345,7 +347,7 @@ curl -s -X POST http://localhost:8090/ask \
 
 ---
 
-## URL tổng hợp
+## Danh mục URL dịch vụ
 
 | Service              | URL                                    | Mô tả                           |
 |----------------------|----------------------------------------|---------------------------------|
@@ -381,8 +383,8 @@ curl -s http://localhost:8091/health | jq
   "status": "ok",
   "ollama_base_url": "http://ollama:11434",
   "rag_api_url": "http://rag-api:8090",
-  "agents": 13,
-  "workflow_steps": ["ba","pm","sa","ta","designer","fe","mobile","dba","be","da","tech_lead","tester","devsecops"]
+  "agents": 14,
+  "workflow_steps": ["ba","pm","sa","ta","designer","tl","fe","mobile","dba","be","da","tech_lead","tester","devsecops"]
 }
 ```
 
@@ -394,7 +396,7 @@ curl -s http://localhost:8091/agents | jq
 ### Chạy single-step agent
 
 ```bash
-# Chạy BA agent riêng lẻ
+# Chạy riêng BA agent
 curl -s -X POST http://localhost:8091/agent/ba \
   -H "Content-Type: application/json" \
   -d '{
@@ -404,7 +406,7 @@ curl -s -X POST http://localhost:8091/agent/ba \
     "rag_top_k": 5
   }' | jq .output
 
-# Chạy PM agent với output của BA từ trước
+# Chạy PM agent với output BA đã có
 curl -s -X POST http://localhost:8091/agent/pm \
   -H "Content-Type: application/json" \
   -d '{
@@ -459,14 +461,14 @@ curl -s -X POST http://localhost:8091/workflow/run \
 ```
 
 ```bash
-# 2. Poll trạng thái (chạy nhiều lần, ~15-45 phút tùy model)
+# 2. Poll trạng thái (lặp lại theo chu kỳ, khoảng 15-45 phút tùy model)
 curl -s http://localhost:8091/workflow/a1b2c3d4-... | jq .status
 
-# 3. Khi status=completed, lấy output từng step
+# 3. Khi status=completed, lấy output theo từng step
 curl -s http://localhost:8091/workflow/a1b2c3d4-... | jq '.step_outputs.ba'
 curl -s http://localhost:8091/workflow/a1b2c3d4-... | jq '.step_outputs.sa'
 
-# 4. Xem danh sách tất cả workflows gần đây (max 50 entries)
+# 4. Xem danh sách workflow gần đây (tối đa 50 bản ghi)
 curl -s http://localhost:8091/workflows | jq
 ```
 
@@ -474,12 +476,12 @@ curl -s http://localhost:8091/workflows | jq
 
 | Status      | Ý nghĩa                                            |
 |-------------|---------------------------------------------------|
-| `pending`   | Đã queue, chưa bắt đầu                           |
-| `running`   | LangGraph đang chạy các steps                    |
-| `completed` | Tất cả 13 bước hoàn thành                       |
-| `failed`    | Exception không xử lý được; xem field `error`    |
+| `pending`   | Đã vào hàng đợi, chưa bắt đầu                     |
+| `running`   | LangGraph đang thực thi các bước                 |
+| `completed` | Hoàn tất toàn bộ 14 bước                         |
+| `failed`    | Có lỗi không xử lý được; kiểm tra trường `error` |
 
-> **Lưu ý:** Nếu một bước gặp lỗi LLM (timeout, model chưa pull, v.v.), nó ghi `[LỖI trong <role>] ...` vào `step_outputs` và `error` field, nhưng workflow **tiếp tục chạy** các bước tiếp theo (non-fatal per step).
+> **Lưu ý:** Nếu một bước gặp lỗi LLM (timeout, model chưa pull, v.v.), hệ thống sẽ ghi `[LỖI trong <role>] ...` vào `step_outputs` và trường `error`, nhưng workflow vẫn tiếp tục các bước kế tiếp (lỗi không dừng toàn pipeline).
 
 ---
 
@@ -497,8 +499,8 @@ curl -s http://localhost:8090/health | jq
   "ollama_base_url": "http://ollama:11434",
   "qdrant_url": "http://qdrant:6333",
   "collection_prefix": "yan_raw_docs",
-  "embedding_model": "qwen3-embedding:8b",
-  "chat_model": "qwen2.5-coder:14b",
+  "embedding_model": "<embedding_model_from_env>",
+  "chat_model": "<chat_model_from_env>",
   "rag_top_k": 4,
   "graph": {
     "enabled": true,
@@ -552,7 +554,7 @@ curl -s -X POST http://localhost:8090/reset-ingest \
 
 ### Ask
 
-**Request body:**
+**Request body**
 
 | Field      | Type            | Mô tả                                                              |
 |------------|-----------------|--------------------------------------------------------------------|
@@ -561,30 +563,30 @@ curl -s -X POST http://localhost:8090/reset-ingest \
 | `module`   | `string\|null`  | Lọc theo module trong project (null = search toàn project)        |
 | `top_k`    | `int\|null`     | Số kết quả (null = dùng `RAG_TOP_K` env, mặc định 4)              |
 
-**Response `sources[]` fields:** `score`, `project`, `module`, `doc_type`, `chunk_type`, `source_file`, `relative_path`, `file_type`, `chunk_index`, `preview`
+**Các trường trong `sources[]`:** `score`, `project`, `module`, `doc_type`, `chunk_type`, `source_file`, `relative_path`, `file_type`, `chunk_index`, `preview`
 
 ```bash
-# Hỏi toàn bộ (search tất cả collections, merge kết quả)
+# Truy vấn toàn bộ (tìm trên tất cả collection và hợp nhất kết quả)
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "Mô tả auth flow?"}' | jq
 
-# Hỏi trong project cụ thể
+# Truy vấn trong một project cụ thể
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "Schema billing như thế nào?", "project": "yanlib"}' | jq
 
-# Hỏi trong project + filter theo module (tăng độ chính xác)
+# Truy vấn theo project và module (tăng độ chính xác)
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "Auth flow hoạt động như thế nào?", "project": "yanlib", "module": "auth"}' | jq
 
-# Tuỳ chỉnh top_k
+# Tùy chỉnh top_k
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "Marketplace pack architecture?", "project": "yanlib", "top_k": 8}' | jq
 
-# Chỉ lấy answer
+# Chỉ lấy trường answer
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "Partner platform là gì?"}' | jq .answer
@@ -611,7 +613,7 @@ curl -s -X DELETE http://localhost:6333/collections/yan_raw_docs__auth | jq
 ### Graph (Neo4j)
 
 ```bash
-# Trạng thái Neo4j + thống kê node counts
+# Trạng thái Neo4j và thống kê số lượng node
 curl -s http://localhost:8090/graph/status | jq
 ```
 
@@ -631,24 +633,24 @@ curl -s http://localhost:8090/graph/status | jq
 ```
 
 ```bash
-# Xem entities đã extract trong 1 project (yêu cầu GRAPH_ENTITY_EXTRACTION=true)
+# Xem entities đã trích xuất trong một project (yêu cầu GRAPH_ENTITY_EXTRACTION=true)
 curl -s http://localhost:8090/graph/projects/auth/entities | jq
 ```
 
 ### Ollama
 
 ```bash
-# Danh sách models đã pull
+# Danh sách model đã pull
 curl -s http://localhost:11434/api/tags | jq .models[].name
 
-# Kiểm tra Ollama còn sống
+# Kiểm tra Ollama đang hoạt động
 curl -s http://localhost:11434/
 
-# Chat trực tiếp (không qua RAG)
+# Chat trực tiếp (không qua lớp RAG)
 curl -s -X POST http://localhost:11434/api/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen2.5-coder:14b",
+    "model": "<chat_model>",
     "messages": [{"role": "user", "content": "Hello"}],
     "stream": false
   }' | jq .message.content
@@ -656,37 +658,37 @@ curl -s -X POST http://localhost:11434/api/chat \
 
 ---
 
-## Cập nhật tài liệu mới (workflow)
+## Quy trình cập nhật tài liệu
 
 ```bash
-# 1. Thêm file vào đúng subfolder
+# 1. Thêm file vào đúng thư mục con
 cp my-new-spec.md data/raw/marketplace/
 
-# 2. Ingest lại project đó (idempotent — chunk đã tồn tại sẽ upsert, không duplicate)
+# 2. Ingest lại project (idempotent: chunk đã tồn tại sẽ upsert, không tạo bản sao)
 curl -s -X POST http://localhost:8090/ingest \
   -H "Content-Type: application/json" \
   -d '{"project": "marketplace"}' | jq .upserted
 
-# 3. Test ngay
+# 3. Kiểm tra lại truy vấn
 curl -s -X POST http://localhost:8090/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "...", "project": "marketplace"}' | jq .answer
 ```
 
-> **Idempotent:** Ingest cùng file nhiều lần sẽ upsert vào cùng point ID (deterministic UUID từ path + content hash) — không tạo duplicate.
+> **Idempotent:** Ingest cùng một file nhiều lần sẽ upsert vào cùng point ID (deterministic UUID từ path + content hash), không tạo bản ghi trùng lặp.
 
 ---
 
 ## Open WebUI — Custom Tools
 
-### Cài đặt
+### Thiết lập
 
 1. Mở **Admin Panel → Tools → "+"**
-2. Paste nội dung file tool, lưu, enable trong model settings
+2. Dán nội dung file tool, lưu, rồi bật trong phần model settings
 
 ### Tool 1: `yan_knowledge_base.py` — RAG Query
 
-Query trực tiếp knowledge base từ chat UI.
+Truy vấn trực tiếp knowledge base từ giao diện chat.
 
 **Valves:**
 
@@ -705,7 +707,7 @@ Tìm trong knowledge base: auth flow hoạt động như thế nào?
 
 ### Tool 2: `yan_agent_workflow.py` — SDLC Workflow
 
-Chạy full SDLC AI workflow hoặc từng agent đơn lẻ.
+Chạy toàn bộ SDLC workflow hoặc chạy từng agent độc lập.
 
 **Valves:**
 
@@ -723,7 +725,7 @@ Chạy full SDLC AI workflow hoặc từng agent đơn lẻ.
 
 | Function              | Mô tả                                                      |
 |-----------------------|------------------------------------------------------------|
-| `run_sdlc_workflow`   | Chạy đầy đủ 13 bước, polls đến khi xong, trả về summary   |
+| `run_sdlc_workflow`   | Chạy đầy đủ 14 bước, poll đến khi hoàn tất, trả về summary |
 | `run_agent_step`      | Chạy 1 agent role đơn lẻ (sync)                           |
 | `get_workflow_result` | Lấy kết quả workflow theo ID, filter theo role             |
 | `list_agent_roles`    | Liệt kê tất cả roles, models, thứ tự chạy                 |
@@ -735,24 +737,24 @@ Chạy SDLC workflow cho: xây dựng tính năng payment gateway cho marketplac
 
 ---
 
-## Thay đổi model
+## Điều chỉnh model
 
-Tất cả models được quản lý trong `.env` → section `SDLC Agent Models`.  
-Sau khi sửa `.env`, **chỉ cần restart service** — không cần rebuild image:
+Tất cả model được quản lý trong `.env` tại mục `SDLC Agent Models`.  
+Sau khi cập nhật `.env`, chỉ cần restart service, không cần rebuild image:
 
 ```bash
-# Thay đổi model trong .env, sau đó:
+# Cập nhật model trong .env, sau đó:
 docker compose restart agent-api   # cho SDLC agent models
 docker compose restart rag-api     # cho CHAT_MODEL hoặc EMBEDDING_MODEL
 
-# Nếu đổi EMBEDDING_MODEL: bắt buộc re-ingest toàn bộ documents
+# Nếu đổi EMBEDDING_MODEL: bắt buộc re-ingest toàn bộ tài liệu
 curl -s -X POST http://localhost:8090/reset-ingest | jq
 curl -s -X POST http://localhost:8090/ingest | jq
 ```
 
 ---
 
-## Rebuild sau khi sửa code
+## Rebuild sau khi cập nhật mã nguồn
 
 ```bash
 # Rebuild và restart agent-api
@@ -767,53 +769,47 @@ docker compose up -d --build agent-api rag-api
 
 ---
 
-## Watchtower — Auto-update
+## Watchtower - Auto-update
 
-Watchtower tự pull image mới và restart container theo schedule (`WATCHTOWER_SCHEDULE` trong `.env`, mặc định mỗi phút).
+Watchtower tự pull image mới và restart container theo lịch (`WATCHTOWER_SCHEDULE` trong `.env`, mặc định mỗi phút).
 
 ```bash
-# Trigger update thủ công qua HTTP API
+# Kích hoạt cập nhật thủ công qua HTTP API
 curl -s -H "Authorization: Bearer ${WATCHTOWER_HTTP_API_TOKEN}" \
   http://localhost:8080/v1/update
 
-# Xem metrics
+# Xem metrics hiện tại
 curl -s -H "Authorization: Bearer ${WATCHTOWER_HTTP_API_TOKEN}" \
   http://localhost:8080/v1/metrics
 ```
 
-> **Lưu ý:** `rag-api` và `agent-api` có `watchtower.enable=false` — chúng là local build, không được Watchtower tự update. Dùng `docker compose up -d --build` để update.
+> **Lưu ý:** `rag-api` và `agent-api` đang dùng local build với `watchtower.enable=false`, nên Watchtower không tự cập nhật. Sử dụng `docker compose up -d --build` khi cần cập nhật.
 
 ---
 
-## Quản lý Docker
+## Vận hành Docker
 
 ```bash
-# Khởi động tất cả
+# Khởi động toàn bộ dịch vụ
 docker compose up -d
 
-# Dừng tất cả
+# Dừng toàn bộ dịch vụ
 docker compose down
 
-# Rebuild rag-api sau khi sửa code
+# Rebuild rag-api sau khi cập nhật mã nguồn
 docker compose up -d --build rag-api
 
-# Xem logs realtime
-docker compose logs -f rag-api
-
-# Restart 1 service
-docker compose restart rag-api
-
-# Xem logs realtime
+# Theo dõi logs theo thời gian thực
 docker compose logs -f agent-api
 docker compose logs -f rag-api
 
-# Restart 1 service
+# Khởi động lại một service
 docker compose restart agent-api
 
-# Xem resource usage
+# Theo dõi mức sử dụng tài nguyên
 docker stats
 
-# Xoá volumes (NGUY HIỂM — xoá hết data Ollama + Qdrant + Neo4j)
+# Xóa volumes (NGUY HIỂM: xóa toàn bộ dữ liệu Ollama + Qdrant + Neo4j)
 docker compose down -v
 ```
 
@@ -821,17 +817,17 @@ docker compose down -v
 
 ## Troubleshooting
 
-| Triệu chứng | Nguyên nhân | Giải pháp |
+| Triệu chứng | Nguyên nhân | Hướng xử lý |
 |---|---|---|
-| `rag-api` / `agent-api` crash khi start | Env var chưa set | `docker compose logs rag-api` hoặc `agent-api` |
+| `rag-api` / `agent-api` crash khi start | Thiếu env var bắt buộc | `docker compose logs rag-api` hoặc `agent-api` |
 | `/ask` trả về 404 "chưa được ingest" | Chưa chạy `/ingest` | `POST /ingest {"project": "..."}` |
 | `/ingest` trả về `"status": "empty"` | Không có subfolder trong `data/raw/` | Tạo subfolder và đặt file vào đó |
 | `/ask` với `module` không trả kết quả | Module chưa tồn tại trong collection | Kiểm tra tên module = tên thư mục con trong project |
-| Ingest chậm hoặc mất rất lâu | `INGEST_EMBED_WORKERS` quá thấp | Tăng `INGEST_EMBED_WORKERS` = `OLLAMA_NUM_PARALLEL`; restart `rag-api` |
-| Embedding chậm / timeout | Model chưa được pull | `docker exec ollama ollama pull qwen3-embedding:8b` |
+| Ingest chậm hoặc mất nhiều thời gian | `INGEST_EMBED_WORKERS` quá thấp | Tăng `INGEST_EMBED_WORKERS` bằng `OLLAMA_NUM_PARALLEL`; restart `rag-api` |
+| Embedding chậm / timeout | Model chưa được pull | Pull lại model đang cấu hình trong `.env` bằng lệnh ở mục **Pull models Ollama** |
 | SDLC workflow `status=failed` | Xem field `error` | `curl .../workflow/{id} \| jq .error` |
-| SDLC step output bắt đầu bằng `[LỖI` | LLM timeout hoặc model chưa pull | Kiểm tra model đã pull, tăng `RAG_TIMEOUT` trong `.env` |
-| Output chứa `<think>...</think>` thô | Model qwen3 / deepseek-r1 / qwq chưa được nhận diện | Kiểm tra tên model khớp với prefix trong `_REASONING_MODELS` (workflow.py) |
+| SDLC step output bắt đầu bằng `[LỖI` | LLM timeout hoặc model chưa pull | Kiểm tra model đã pull, tăng `OLLAMA_REQUEST_TIMEOUT` trong `.env` |
+| Output chứa `<think>...</think>` thô | Model reasoning chưa được nhận diện | Kiểm tra tên model khớp rule nhận diện trong `agent-api/workflow.py` |
 | `user_input` bị cắt ngắn trong workflow | Input > 10 000 ký tự | Input được sanitize tự động; chia nhỏ nếu cần |
 | `workflow_runs.jsonl` không được tạo | `MEMORY_DIR` không mount | Kiểm tra volume `./data/memory:/data/memory` trong `docker-compose.yml` |
 | Open WebUI không gọi được rag-api | URL sai (dùng `localhost`) | Valve `rag_api_url` = `http://rag-api:8090` |
@@ -840,8 +836,8 @@ docker compose down -v
 | Neo4j không kết nối được | Container chưa sẵn sàng | Đợi ~30s, kiểm tra `docker compose logs neo4j` |
 | `/graph/status` → `connected: false` | Sai `NEO4J_PASSWORD` | `.env` phải khớp với lần đầu Neo4j khởi tạo |
 | `graph_chunks_saved: 0` sau ingest | `GRAPH_ENABLED=false` trong `.env` | Đổi thành `true` + `docker compose up -d --build rag-api` |
-| Workflow mất > 30 phút | Model quá lớn / không có GPU | Thử model nhỏ hơn hoặc tăng `poll_max_attempts` |
-| `workflow_id` not found sau vài giờ | In-memory store bị evict (max 50) | Tăng `_MAX_STORED_WORKFLOWS` trong `agent-api/app.py` hoặc lưu kết quả ngay |
+| Workflow mất > 30 phút | Model nặng hoặc tài nguyên thiếu | Giảm mức song song, chọn model nhẹ hơn, hoặc tăng `poll_max_attempts` |
+| `workflow_id` not found sau vài giờ | In-memory store bị evict (tối đa 50) | Tăng `_MAX_STORED_WORKFLOWS` trong `agent-api/app.py` hoặc lưu kết quả ngay sau khi hoàn tất |
 
 ---
 

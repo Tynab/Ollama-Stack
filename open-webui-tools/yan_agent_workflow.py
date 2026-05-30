@@ -2,7 +2,7 @@
 title: YAN SDLC Agent Workflow
 author: YAN
 description: >
-  Khởi chạy SDLC Agent Workflow 13 bước: BA → PM → SA → TA → Designer → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps.
+    Khởi chạy SDLC Agent Workflow 14 bước: BA → PM → SA → TA → Designer → Team Lead → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps.
   Hỗ trợ chạy full workflow (async + polling) hoặc từng agent đơn lẻ (sync).
 required_open_webui_version: 0.3.0
 requirements: requests
@@ -21,6 +21,7 @@ _VALID_ROLES = [
     "sa",
     "ta",
     "designer",
+    "tl",
     "fe",
     "mobile",
     "dba",
@@ -37,6 +38,7 @@ _ROLE_DESCRIPTIONS = {
     "sa":           "SA Agent — Solution Architecture",
     "ta":           "TA Agent — Technical Architecture",
     "designer":     "Designer Agent — UI/UX Design",
+    "tl":           "Team Lead Agent — Engineering Task Planning",
     "fe":           "FE Agent — Frontend Engineering",
     "mobile":       "Mobile Agent — Mobile Engineering",
     "be":           "BE Agent — Backend Implementation",
@@ -105,7 +107,7 @@ class Tools:
         tech_stack: str | None = None,
     ) -> str:
         """
-        Chạy toàn bộ SDLC Workflow 13 bước (BA → PM → SA → TA → Designer → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps).
+        Chạy toàn bộ SDLC Workflow 14 bước (BA → PM → SA → TA → Designer → Team Lead → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps).
         Mỗi agent nhận output đã cắt ngắn của các agent phụ thuộc và bổ sung RAG context từ knowledge base.
 
         :param user_input: Mô tả business goal / feature / project cần phân tích và implement
@@ -206,7 +208,7 @@ class Tools:
         Chạy một agent step đơn lẻ (không cần chạy full workflow).
         Dùng để test từng agent hoặc bổ sung output thủ công.
 
-        :param role: Tên agent role. Hợp lệ: ba, pm, sa, ta, designer, fe, mobile, be, dba, da, tech_lead, tester, devsecops
+        :param role: Tên agent role. Hợp lệ: ba, pm, sa, ta, designer, tl, fe, mobile, be, dba, da, tech_lead, tester, devsecops
         :param user_input: Business goal / context đầu vào cho agent
         :param extra_context: Context bổ sung (ví dụ: output từ step trước dán vào)
         :param project: RAG project filter. Để trống để search tất cả.

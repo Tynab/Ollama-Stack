@@ -75,7 +75,7 @@ CHUNK_SIZE = int(_require_env("CHUNK_SIZE"))
 CHUNK_OVERLAP = int(_require_env("CHUNK_OVERLAP"))
 UPSERT_BATCH_SIZE = int(_require_env("UPSERT_BATCH_SIZE"))
 # Số batch embed/upsert chạy đồng thời trong async pipeline.
-# Đặt bằng OLLAMA_NUM_PARALLEL để khai thác tối đa GPU; mặc định 1 (an toàn cho GPU 6 GB).
+# Nên điều chỉnh theo tài nguyên thực tế; mặc định 1 để ưu tiên ổn định.
 INGEST_EMBED_WORKERS: int = max(1, int(os.environ.get("INGEST_EMBED_WORKERS", "1")))
 
 GRAPH_ENABLED: bool = os.environ.get("GRAPH_ENABLED", "true").lower() == "true"

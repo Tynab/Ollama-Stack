@@ -22,7 +22,7 @@ services:
       OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE}
       OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH}
-      OLLAMA_FLASH_ATTENTION: "0"
+      OLLAMA_FLASH_ATTENTION: "1"
     deploy:
       resources:
         reservations:
@@ -151,6 +151,7 @@ services:
       DA_MODEL: ${DA_MODEL}
       BE_MODEL: ${BE_MODEL}
       TECH_LEAD_MODEL: ${TECH_LEAD_MODEL}
+      TL_MODEL: ${TL_MODEL:-phi4-mini}
       TESTER_MODEL: ${TESTER_MODEL}
       DEVSECOPS_MODEL: ${DEVSECOPS_MODEL}
       MEMORY_DIR: /data/memory

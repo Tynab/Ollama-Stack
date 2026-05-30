@@ -3,7 +3,7 @@ workflow.py — Bộ điều phối SDLC workflow dùng LangGraph.
 
 Cấu trúc đồ thị (tuần tự nghiêm ngặt)
 --------------------------------------
-  ba -> pm -> sa -> ta -> designer -> fe -> mobile -> dba -> be -> da -> tech_lead -> tester -> devsecops -> END
+    ba -> pm -> sa -> ta -> designer -> tl -> fe -> mobile -> dba -> be -> da -> tech_lead -> tester -> devsecops -> END
 
 Mỗi node thực thi ba giai đoạn:
   1. Tổng hợp context  — chèn output (đã cắt ngắn) từ các bước phụ thuộc.
@@ -53,7 +53,6 @@ RAG_TOP_K: int = int(os.environ.get("RAG_TOP_K", "5"))
 # Context window Ollama (tokens). Tăng nếu model hỗ trợ window lớn hơn.
 OLLAMA_NUM_CTX: int = int(os.environ.get("OLLAMA_CONTEXT_LENGTH", "32768"))
 # Timeout (giây) cho mỗi lần gọi RAG /ask.
-# 600s để xử lý việc Ollama hoán đổi model (qwen3 ↔ qwen2.5-coder) giữa các bước.
 RAG_TIMEOUT: int = int(os.environ.get("RAG_TIMEOUT", "600"))
 # Timeout (giây) cho mỗi lần gọi Ollama LLM.
 OLLAMA_REQUEST_TIMEOUT: int = int(os.environ.get("OLLAMA_REQUEST_TIMEOUT", "1200"))
@@ -84,6 +83,7 @@ Critical rules — apply to every response:
 8. If sources are available in RAG context, reference the source file name in a Notes/Source column.
 9. If actual source code is not provided, clearly label your output as Design Review, not Code Review. Do not invent file names, line numbers, or PR comments.
 10. Complete sections in order. If context budget is exhausted before all sections are done, mark remaining sections as [Deferred — insufficient input] and stop cleanly. Do not produce partial sentences or half-filled tables.
+11. LANGUAGE: Respond in English only. Do not write in Vietnamese, even if the user input or project context is in Vietnamese. All section headings, labels, table headers, and prose must be in English.
 """
 
 
@@ -151,7 +151,11 @@ def _strip_thinking(text: str) -> str:
 
 
 def _get_num_ctx(model: str) -> int:
-    """Trả về num_ctx phù hợp với model. codegemma:2b chỉ hỗ trợ đến 8 192 tokens."""
+    """Trả về num_ctx phù hợp với model.
+
+    Một số model nhỏ được clamp ở 4 096 để giảm loop/hallucination
+    và timeout trong bối cảnh pipeline nhiều bước.
+    """
     if "codegemma:2b" in model.lower():
         return min(4096, OLLAMA_NUM_CTX)
     return OLLAMA_NUM_CTX
@@ -161,12 +165,12 @@ def _get_num_ctx(model: str) -> int:
 _PER_DEP_CHARS: dict[str, int] = {
     "tech_lead": 800,    # 5 deps × 800 = 4 000 chars ≈ 1 000 tokens
     "devsecops": 1_000,  # 4 deps × 1 000 = 4 000 chars ≈ 1 000 tokens
-    "tester":    2_000,  # 5 deps × 2 000 = 10 000 chars ≈ 2 500 tokens
+    "tester":    3_000,  # 5 deps × 3 000 = 15 000 chars ≈ 3 700 tokens
 }
 
 
 # Roles sinh code/config theo từng file riêng biệt (loop-per-file approach).
-# Không inject _FILE_OUTPUT_INSTRUCTION nữa vì codegemma:2b echo template verbatim.
+# Không inject _FILE_OUTPUT_INSTRUCTION nữa vì một số model có thể lặp lại template verbatim.
 _ARTIFACT_ROLES: frozenset[str] = frozenset(
     {"fe", "mobile", "be", "dba", "devsecops", "tech_lead"}
 )
@@ -177,7 +181,7 @@ You are a {role_name}. Based on the task and tech stack, list the source code / 
 Return ONLY a JSON array (no prose, no markdown wrapper):
 [{{"filename": "src/components/Login.tsx", "description": "Login form component", "language": "typescript"}}]
 Rules:
-- Max {max_files} files. Prioritize the most critical files for this role.
+- Produce ONLY essential, non-trivial files. Minimum 2, maximum {max_files}. Do NOT pad to the limit — only list files that are truly needed.
 - Use relative paths from project root.
 - "language" must be a valid code fence name (typescript, python, yaml, sql, dockerfile, etc).
 {extra}
@@ -194,7 +198,11 @@ Purpose: {description}
 Tech stack: {tech_stack}
 {extra}
 
-Respond with one triple-backtick code block containing the full working implementation.
+Strict rules:
+- Respond with one triple-backtick code block containing the full working implementation.
+- Do not include author/date/version/license/copyright metadata headers.
+- Do not repeat identical import lines or boilerplate blocks.
+- Prefer concise, production-ready code over placeholders.
 """
 
 
@@ -239,7 +247,7 @@ def _strip_code_fence(content: str, language: str) -> str:
 
 
 def _deloop(text: str, max_repeats: int = 8) -> str:
-    """Truncate infinitely-repeated identical lines (codegemma:2b loop bug)."""
+    """Truncate infinitely-repeated identical lines to mitigate model loop bugs."""
     lines = text.split("\n")
     out: list[str] = []
     prev: str | None = None
@@ -257,6 +265,59 @@ def _deloop(text: str, max_repeats: int = 8) -> str:
             count = 1
             out.append(ln)
     return "\n".join(out)
+
+
+def _compute_extra_instruction(role: str, tech_stack: list[str] | None) -> str:
+    """Role-specific instructions for artifact generation."""
+    if not tech_stack:
+        if role == "tech_lead":
+            return (
+                "Write ARCHITECTURE.md or INTEGRATION.md with technical review, "
+                "integration decisions, code standards, and specific code change recommendations."
+            )
+        return ""
+
+    db_type = _detect_db_type(tech_stack)
+    if role == "dba":
+        if db_type == "nosql":
+            return (
+                "Use MongoDB Mongoose models (TypeScript .ts files). "
+                "NO SQL CREATE TABLE or DDL. "
+                "Embedded documents and arrays instead of FK/JOINs."
+            )
+        if db_type == "sql":
+            return "Use SQL DDL with CREATE TABLE, FOREIGN KEY references, and CREATE INDEX."
+        if db_type == "both":
+            return (
+                "Create both SQL DDL (schema.sql) AND Mongoose models (.ts). "
+                "SQL for relational data, MongoDB for document data."
+            )
+    if role == "fe":
+        return (
+            "Write real React/TypeScript component with JSX markup, hooks, and props interface. "
+            "No license headers."
+        )
+    if role == "mobile":
+        return (
+            "Write real Flutter/Dart widget or React Native component with actual UI code. "
+            "No license headers."
+        )
+    if role == "be":
+        return (
+            "Write real NestJS service, controller, or DTO with actual business logic. "
+            "No license headers."
+        )
+    if role == "devsecops":
+        return (
+            "Write real Dockerfile, docker-compose.yml, or CI/CD YAML with working config. "
+            "No license headers."
+        )
+    if role == "tech_lead":
+        return (
+            "Write ARCHITECTURE.md or INTEGRATION.md with technical review, "
+            "integration decisions, code standards, and specific code change recommendations."
+        )
+    return ""
 
 
 def _plan_code_files(
@@ -288,7 +349,7 @@ def _plan_code_files(
     try:
         resp = planner.invoke([HumanMessage(content=prompt)])
         content = str(resp.content)
-        m = re.search(r"\[.*\]", content, re.DOTALL)
+        m = re.search(r"\[.*?\]", content, re.DOTALL)
         if m:
             files = _json.loads(m.group(0))
             return [
@@ -419,7 +480,7 @@ def _call_agent(
     response = llm.invoke(messages)
     result   = str(response.content)
 
-    # Strip chain-of-thought blocks from reasoning models (phi4-mini-reasoning etc.)
+    # Strip chain-of-thought blocks from reasoning models.
     if any(m in agent.model.lower() for m in _REASONING_MODELS):
         result = _strip_thinking(result)
 
@@ -548,58 +609,7 @@ def _build_node(role: str):
                     )
 
         # Tính extra_instruction cho _generate_artifacts_multi_turn
-        extra_instruction = ""
-        if role in _ARTIFACT_ROLES and tech_stack:
-            db_type = _detect_db_type(tech_stack)
-            if role == "dba":
-                if db_type == "nosql":
-                    extra_instruction = (
-                        "Use MongoDB Mongoose models (TypeScript .ts files). "
-                        "NO SQL CREATE TABLE or DDL. "
-                        "Embedded documents and arrays instead of FK/JOINs."
-                    )
-                elif db_type == "sql":
-                    extra_instruction = (
-                        "Use SQL DDL with CREATE TABLE, FOREIGN KEY references, and CREATE INDEX."
-                    )
-                elif db_type == "both":
-                    extra_instruction = (
-                        "Create both SQL DDL (schema.sql) AND Mongoose models (.ts). "
-                        "SQL for relational data, MongoDB for document data."
-                    )
-            elif role == "da":
-                if db_type == "nosql":
-                    extra_instruction = (
-                        "Use MongoDB aggregation pipeline. No SQL. "
-                        "Show how BE exports a CSV and write Python/pandas analysis script."
-                    )
-                elif db_type == "sql":
-                    extra_instruction = "Use SQL queries with GROUP BY, aggregates, and window functions."
-            elif role == "fe":
-                extra_instruction = (
-                    "Write real React/TypeScript component with JSX markup, hooks, and props interface. "
-                    "No license headers."
-                )
-            elif role == "mobile":
-                extra_instruction = (
-                    "Write real Flutter/Dart widget or React Native component with actual UI code. "
-                    "No license headers."
-                )
-            elif role == "be":
-                extra_instruction = (
-                    "Write real NestJS service, controller, or DTO with actual business logic. "
-                    "No license headers."
-                )
-            elif role == "devsecops":
-                extra_instruction = (
-                    "Write real Dockerfile, docker-compose.yml, or CI/CD YAML with working config. "
-                    "No license headers."
-                )
-            elif role == "tech_lead":
-                extra_instruction = (
-                    "Write ARCHITECTURE.md or INTEGRATION.md with technical review, "
-                    "integration decisions, code standards, and specific code change recommendations."
-                )
+        extra_instruction = _compute_extra_instruction(role, tech_stack)
 
         context = "\n".join(context_parts)
         ollama_url = state.get("ollama_base_url", OLLAMA_BASE_URL)
@@ -737,4 +747,15 @@ def run_single_step(
             )
 
     context = "\n".join(context_parts)
+    if role in _ARTIFACT_ROLES:
+        extra_instruction = _compute_extra_instruction(role, tech_stack)
+        return _generate_artifacts_multi_turn(
+            role,
+            agent,
+            ollama_base_url,
+            context,
+            user_input,
+            tech_stack,
+            extra_instruction,
+        )
     return _call_agent(agent, ollama_base_url, context)
