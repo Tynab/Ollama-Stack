@@ -1,7 +1,7 @@
 """
-agents.py — Cấu hình cho 13 agent SDLC trong LangGraph workflow.
+agents.py — Cấu hình cho 14 agent SDLC trong LangGraph workflow.
 
-Định nghĩa pipeline 13 agent:
+Định nghĩa pipeline 14 agent:
 
   Bước  Role           Model              Phụ thuộc
   ----- -------------- ------------------ ----------------------------------
@@ -10,14 +10,15 @@ agents.py — Cấu hình cho 13 agent SDLC trong LangGraph workflow.
    3    sa             SA_MODEL           ba, pm
    4    ta             TA_MODEL           ba, sa
    5    designer       DESIGNER_MODEL     ba, sa, ta
-   6    fe             FE_MODEL           ba, sa, ta, designer
-   7    mobile         MOBILE_MODEL       ba, sa, ta, designer
-   8    dba            DBA_MODEL          ba, sa, ta
-   9    be             BE_MODEL           ba, sa, ta, fe, mobile, dba
-  10    da             DA_MODEL           ba, sa, dba
-  11    tech_lead      TECH_LEAD_MODEL    sa, fe, mobile, be, dba
-  12    tester         TESTER_MODEL       be, fe, mobile, tech_lead, designer
-  13    devsecops      DEVSECOPS_MODEL    sa, ta, tech_lead, tester
+   6    tl             TL_MODEL           ba, sa, ta, designer
+   7    fe             FE_MODEL           ba, sa, ta, designer, tl
+   8    mobile         MOBILE_MODEL       ba, sa, ta, designer, tl
+   9    dba            DBA_MODEL          ba, sa, ta, tl
+  10    be             BE_MODEL           ba, sa, ta, fe, mobile, dba, tl
+  11    da             DA_MODEL           ba, sa, dba
+  12    tech_lead      TECH_LEAD_MODEL    sa, fe, mobile, be, dba
+  13    tester         TESTER_MODEL       be, fe, mobile, tech_lead, designer
+  14    devsecops      DEVSECOPS_MODEL    sa, ta, tech_lead, tester
 
 Chọn model
 ----------
@@ -37,22 +38,23 @@ import os
 from dataclasses import dataclass, field
 
 # ── Hằng số Model (lấy từ .env → khối environment trong docker-compose) ────
-# Agent suy luận — dùng qwen3.6:35b cho BA/PM/SA/TA/DA
+# Agent suy luận
 MODEL_BA: str        = os.environ.get("BA_MODEL",        "qwen3.6:35b")
 MODEL_PM: str        = os.environ.get("PM_MODEL",        "qwen3.6:35b")
 MODEL_SA: str        = os.environ.get("SA_MODEL",        "qwen3.6:35b")
 MODEL_TA: str        = os.environ.get("TA_MODEL",        "qwen3.6:35b")
 MODEL_DA: str        = os.environ.get("DA_MODEL",        "qwen3.6:35b")
-# Agent lập trình — dùng qwen3-coder-next cho FE/BE/DBA/Tech Lead/DevSecOps
+# Agent lập trình
 MODEL_FE: str           = os.environ.get("FE_MODEL",           "qwen3-coder-next")
 MODEL_MOBILE: str       = os.environ.get("MOBILE_MODEL",       "qwen3-coder-next")
 MODEL_BE: str           = os.environ.get("BE_MODEL",           "qwen3-coder-next")
 MODEL_DBA: str          = os.environ.get("DBA_MODEL",          "qwen3-coder-next")
 MODEL_TECH_LEAD: str    = os.environ.get("TECH_LEAD_MODEL",    "qwen3-coder-next")
 MODEL_DEVSECOPS: str    = os.environ.get("DEVSECOPS_MODEL",    "qwen3-coder-next")
-# Agent sáng tạo/QA — dùng qwen3.5:35b cho Tester/Designer
-MODEL_TESTER: str    = os.environ.get("TESTER_MODEL",    "qwen3.5:35b")
-MODEL_DESIGNER: str  = os.environ.get("DESIGNER_MODEL",  "qwen3.5:35b")
+MODEL_TL: str           = os.environ.get("TL_MODEL",           "qwen3-coder-next")
+# Agent sáng tạo / kiểm thử
+MODEL_TESTER: str    = os.environ.get("TESTER_MODEL",    "mistral-small3.2:24b")
+MODEL_DESIGNER: str  = os.environ.get("DESIGNER_MODEL",  "gemma4:31b")
 # LƯU Ý: MODEL_EMBEDDING được định nghĩa trong rag-api/ingest.py, không dùng trong agent-api.
 
 
@@ -146,7 +148,10 @@ Mark any API, integration, or design decision not yet confirmed by stakeholders 
 Structure your output with these sections:
 1. Architecture Overview (patterns used: microservices/monolith/event-driven; diagram description)
 2. Service Boundaries (each service/module: responsibility, owns what data, exposes what APIs)
-3. API Contracts (endpoint, method, request schema, response schema, auth, rate limit)
+3. API Contracts — use a Markdown table, one row per endpoint, all cells single-line:
+   | Endpoint | Method | Request Schema (key fields) | Response Schema (key fields) | Auth | Rate Limit | Status | Notes/Source |
+   Each cell must fit on one line. Use abbreviated field names separated by commas, not JSON. Example row:
+   | /api/users/:id | GET | — | id, email, role, createdAt | JWT | 100/min | [Confirmed] | BA FR-01 |
 4. Data Model (core entities, relationships, key fields, data ownership per service)
 5. Integration & Event Flow (sync REST/gRPC vs async message queue; event contracts)
 6. Security Architecture (AuthN, AuthZ, token strategy, secrets management, data encryption)
@@ -215,13 +220,42 @@ Structure your output with these sections:
 """,
     ),
 
-    # ── Bước 6: FE Agent ─────────────────────────────────────────────────────────────
-    "fe": AgentConfig(
+    # ── Bước 6: TL Agent (Engineering Team Lead) ────────────────────────────────────────────
+    "tl": AgentConfig(
         step_id=6,
+        role="tl",
+        name="Team Lead Agent — Engineering Task Planning",
+        model=MODEL_TL,
+        depends_on=["ba", "sa", "ta", "designer"],
+        rag_query_hint="task breakdown, sprint planning, engineering estimate, technical spike, dependency mapping, story points, team capacity, risk identification",
+        system_prompt="""\
+You are the Engineering Team Lead Agent.
+Your role is to translate the SA architecture, TA tech decisions, BA requirements, and Designer wireframes
+into concrete, sprint-ready task boards for each engineering team (FE, Mobile, BE, DBA).
+Your output is consumed by FE, Mobile, BE, and DBA agents as their primary work breakdown and planning context.
+Do NOT write code. Produce task planning artifacts only.
+
+Structure your output with these sections:
+1. Engineering Summary (brief: what is being built, which teams are involved, key technical bets)
+2. Technical Research Spikes Required (table: | Spike ID | Title | Assigned Team: FE/Mobile/BE/DBA | Description | Blocking For | Est. (days) | Must Resolve Before Sprint |; list every integration or technology that requires investigation before implementation: OAuth flow, third-party SDKs, external APIs, complex algorithms, infra decisions)
+3. Dependency Map (table: | Task/Feature | Depends On | Team Owner | Blocks | Notes |; surface all cross-team dependencies and integration contracts that must be agreed before coding)
+4. FE Task Board (table: | # | Task | Type: Setup/Routing/Component/API Integration/Third-party/Testing | Est. (days) | Priority: P0/P1/P2 | Sprint | Depends On | Acceptance Criteria |; order: Setup → Routing → Core UI → API Integration → Third-party → Testing)
+5. Mobile Task Board (table: | # | Task | Type: Setup/Navigation/Screen/API Integration/SDK/Offline/Testing | Est. (days) | Priority: P0/P1/P2 | Sprint | Depends On | Acceptance Criteria |; order: Setup → Navigation → Core Screens → API Integration → SDKs → Offline → Testing)
+6. BE Task Board (table: | # | Task | Module | Type: Setup/API Endpoint/Business Logic/DB/Auth/Third-party/Testing | Est. (days) | Priority: P0/P1/P2 | Sprint | Depends On | Acceptance Criteria |; list Spikes and Setup first, then endpoints from SA API Contracts)
+7. DBA Task Board (table: | # | Task | Type: Schema/Migration/Index/Query Optimization/Backup/Seeding | Est. (days) | Priority: P0/P1/P2 | Sprint | Depends On | Notes |)
+8. Sprint Allocation Plan (table: | Sprint | FE Focus | Mobile Focus | BE Focus | DBA Focus | Cross-team Milestones |; 2-week sprints)
+9. Definition of Done per Team (checklist: what FE/Mobile/BE/DBA must complete for a task to be Done: code review pass, unit tests, API contract validated, etc.)
+10. Engineering Risks & Mitigations (table: | Risk | Team | Probability: H/M/L | Impact: H/M/L | Mitigation | Owner |; flag any codegemma or small-model limitations if relevant)
+""",
+    ),
+
+    # ── Bước 7: FE Agent ─────────────────────────────────────────────────────────────
+    "fe": AgentConfig(
+        step_id=7,
         role="fe",
         name="FE Agent — Frontend Engineering",
         model=MODEL_FE,
-        depends_on=["ba", "sa", "ta", "designer"],
+        depends_on=["ba", "sa", "ta", "designer", "tl"],
         rag_query_hint="frontend architecture, React component, Next.js page, TypeScript interface, state management, API integration, form validation, responsive design, accessibility, third-party SDK",
         system_prompt="""\
 You are the Frontend Engineer (FE) Agent.
@@ -245,13 +279,13 @@ Structure your output with these sections:
 """,
     ),
 
-    # ── Bước 7: Mobile Agent ──────────────────────────────────────────────────────────────────
+    # ── Bước 8: Mobile Agent ──────────────────────────────────────────────────────────────────
     "mobile": AgentConfig(
-        step_id=7,
+        step_id=8,
         role="mobile",
         name="Mobile Agent — Mobile Engineering",
         model=MODEL_MOBILE,
-        depends_on=["ba", "sa", "ta", "designer"],
+        depends_on=["ba", "sa", "ta", "designer", "tl"],
         rag_query_hint="mobile architecture, Flutter, React Native, navigation flow, screen component, API integration, offline cache, push notification, local storage, app state, mobile UX, permission, third-party SDK",
         system_prompt="""\
 You are the Mobile Engineer Agent.
@@ -277,13 +311,13 @@ Structure your output with these sections:
 """,
     ),
 
-    # ── Bước 8: DBA Agent ────────────────────────────────────────────────────────────
+    # ── Bước 9: DBA Agent ────────────────────────────────────────────────────────────
     "dba": AgentConfig(
-        step_id=8,
+        step_id=9,
         role="dba",
         name="DBA Agent — Database Architecture",
         model=MODEL_DBA,
-        depends_on=["ba", "sa", "ta"],
+        depends_on=["ba", "sa", "ta", "tl"],
         rag_query_hint="ERD, SQL schema, NoSQL schema, database design, index, migration plan, query optimization, backup restore, data retention, task estimate",
         system_prompt="""\
 You are the Database Architect (DBA) Agent.
@@ -305,13 +339,13 @@ Structure your output with these sections:
 """,
     ),
 
-    # ── Bước 9: BE Agent ──────────────────────────────────────────────────────────────────
+    # ── Bước 10: BE Agent ──────────────────────────────────────────────────────────────────
     "be": AgentConfig(
-        step_id=9,
+        step_id=10,
         role="be",
         name="BE Agent — Backend Implementation",
         model=MODEL_BE,
-        depends_on=["ba", "sa", "ta", "fe", "mobile", "dba"],
+        depends_on=["ba", "sa", "ta", "fe", "mobile", "dba", "tl"],
         rag_query_hint="backend API, business logic, service layer, DTO, validation, error handling, authentication, unit test, database access, external service integration, webhook, third-party API",
         system_prompt="""\
 You are the Backend Engineer Agent.
@@ -336,9 +370,9 @@ Structure your output with these sections:
 """,
     ),
 
-    # ── Bước 10: DA Agent ────────────────────────────────────────────────────────────
+    # ── Bước 11: DA Agent ────────────────────────────────────────────────────────────────
     "da": AgentConfig(
-        step_id=10,
+        step_id=11,
         role="da",
         name="DA Agent — Data Analysis & Reporting",
         model=MODEL_DA,
@@ -365,7 +399,7 @@ Structure your output with these sections:
 
     # ──────────────────────────────────────────────────────────────────────────────
     "tech_lead": AgentConfig(
-        step_id=11,
+        step_id=12,
         role="tech_lead",
         name="Tech Lead Agent — Code Review & Standards",
         model=MODEL_TECH_LEAD,
@@ -395,7 +429,7 @@ Structure your output with these sections:
 
     # ──────────────────────────────────────────────────────────────────────────────
     "tester": AgentConfig(
-        step_id=12,
+        step_id=13,
         role="tester",
         name="Tester Agent — Testing & Quality Assurance",
         model=MODEL_TESTER,
@@ -406,24 +440,30 @@ You are the Tester Agent combining QA planning and QC execution mindset.
 Coverage spans Frontend (FE), Mobile, and Backend (BE) layers.
 QA: Create test plans, test cases, and quality gates.
 QC: Execute checklist review, verify acceptance criteria, report defects.
-Every test case must trace back to a requirement ID from the BA RTM. Do not create test cases without a linked requirement ID.
+
+CRITICAL OUTPUT RULES:
+- NEVER write "[Deferred — insufficient input]" or any deferred placeholder for any section.
+- Always produce real, concrete content based on the features, APIs, and components described in the previous agent outputs.
+- If requirement IDs are not explicitly listed in context, generate your own IDs as TC-001, TC-002... based on the features and API endpoints you can see.
+- If context is sparse, infer test scenarios from API endpoint names, component names, form fields, and user stories visible in previous outputs.
+- Every section must contain at least 3 concrete entries. Do not leave any section empty.
 
 Structure your output with these sections:
 1. Test Strategy (scope, test types: unit/integration/e2e/regression/UAT, environments, entry/exit criteria)
-2. Test Scenarios (ID, description, type, priority, preconditions, steps, expected result)
-3. Test Cases (table format: | Test Case ID | Requirement Ref | Scenario | Preconditions | Steps | Test Data | Expected Result | Priority | Type |)
-4. UAT Checklist (business scenario, acceptance criteria, tester notes, pass/fail)
-5. Regression Checklist (feature area, test case IDs, last verified, risk if skipped)
-6. Edge Case Matrix (edge condition, input data, expected behavior, severity)
-7. Bug Report Template & Sample Bugs (ID, severity: Critical/High/Medium/Low, module, steps, expected, actual, screenshot note)
-8. Traceability to Requirements (req ID -> test case IDs -> coverage %)
+2. Test Scenarios (ID, description, type, priority, preconditions, steps, expected result; minimum 5 scenarios covering happy path, auth, validation, and error cases)
+3. Test Cases (table: | TC ID | Feature/API | Scenario | Preconditions | Test Steps | Test Data | Expected Result | Priority | Type |; minimum 8 test cases)
+4. UAT Checklist (business scenario, acceptance criteria, tester notes, pass/fail; derive from BA user stories or infer from feature descriptions)
+5. Regression Checklist (feature area, test case IDs, risk if skipped)
+6. Edge Case Matrix (edge condition, input data, expected behavior, severity; minimum 5 edge cases)
+7. Bug Report Template & Sample Bugs (ID, severity: Critical/High/Medium/Low, module, steps, expected, actual, screenshot note; include at least 2 sample bugs based on likely failure points)
+8. Traceability to Requirements (feature/endpoint → test case IDs → coverage %)
 9. Release Readiness Recommendation (Go / No-Go with conditions, open defect count by severity)
 """,
     ),
 
     # ── Bước 13: DevSecOps Agent ─────────────────────────────────────────────────────────────
     "devsecops": AgentConfig(
-        step_id=13,
+        step_id=14,
         role="devsecops",
         name="DevSecOps Agent — Infrastructure, CI/CD & Deployment",
         model=MODEL_DEVSECOPS,
@@ -462,13 +502,14 @@ Structure your output with these sections:
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Danh sách các bước SDLC workflow theo thứ tự thực thi:
-#   BA -> PM -> SA -> TA -> Designer -> FE -> Mobile -> DBA -> BE -> DA -> Tech Lead -> Tester -> DevSecOps
+#   BA -> PM -> SA -> TA -> Designer -> TL -> FE -> Mobile -> DBA -> BE -> DA -> Tech Lead -> Tester -> DevSecOps
 WORKFLOW_STEPS: list[str] = [
     "ba",
     "pm",
     "sa",
     "ta",
     "designer",
+    "tl",
     "fe",
     "mobile",
     "dba",

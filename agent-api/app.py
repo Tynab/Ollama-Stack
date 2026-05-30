@@ -7,7 +7,7 @@ GET  /health                 Thông tin service: Ollama URL, RAG URL, số agent
 GET  /agents                 Liệt kê cấu hình tất cả agent (step, model, depends_on).
 POST /agent/{role}           Gọi đồng bộ một bước agent đơn lẻ.
                              Body: AgentStepRequest  →  AgentStepResponse
-POST /workflow/run           Gửi workflow SDLC 13 agents để chạy nền.
+POST /workflow/run           Gửi workflow SDLC 14 agents để chạy nền.
                              Body: WorkflowRunRequest  →  {workflow_id, status}
 GET  /workflow/{workflow_id} Kiểm tra trạng thái hoặc lấy kết quả đã hoàn thành.
                              Response: WorkflowRecord
@@ -376,10 +376,10 @@ def run_agent_step(role: str, req: AgentStepRequest) -> AgentStepResponse:
 @app.post("/workflow/run")
 def start_workflow(req: WorkflowRunRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     """
-    Gửi workflow SDLC 13 agent để chạy bất đồng bộ.
+    Gửi workflow SDLC 14 agent để chạy bất đồng bộ.
 
     Trả về ngay với workflow_id. Poll GET /workflow/{id} để kiểm tra trạng thái.
-    Workflow chạy tuần tự: BA → PM → SA → TA → Designer → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps.
+    Workflow chạy tuần tự: BA → PM → SA → TA → Designer → Team Lead → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps.
     Mỗi bước nhận output đã cắt ngắn của các bước phụ thuộc làm context.
     """
     workflow_id = str(uuid.uuid4())
