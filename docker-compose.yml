@@ -154,6 +154,7 @@ services:
       TL_MODEL: ${TL_MODEL:-phi4-mini}
       TESTER_MODEL: ${TESTER_MODEL}
       DEVSECOPS_MODEL: ${DEVSECOPS_MODEL}
+      CLARIFIER_MODEL: ${CLARIFIER_MODEL:-qwen3.6:35b}
       MEMORY_DIR: /data/memory
       ARTIFACT_DIR: /data/artifacts
       MAX_FILES_PER_ROLE: ${MAX_FILES_PER_ROLE:-6}

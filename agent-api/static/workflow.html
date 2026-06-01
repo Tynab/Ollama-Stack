@@ -576,7 +576,7 @@
   <div id="empty-state" class="center-state">
     <div class="icon">🤖</div>
     <h2>YAN SDLC Agent Workflow</h2>
-    <p>Nhập Workflow ID để theo dõi tiến trình 14 bước, hoặc nhấn <strong>Recent</strong> để xem các lần chạy gần đây.</p>
+    <p>Nhập Workflow ID để theo dõi tiến trình 15 bước, hoặc nhấn <strong>Recent</strong> để xem các lần chạy gần đây.</p>
   </div>
 
   <!-- Error box -->
@@ -600,8 +600,8 @@
     <!-- Progress tracker -->
     <div class="progress-card">
       <div class="progress-head">
-        <span class="section-label">13-Step SDLC Pipeline</span>
-        <span class="progress-count"><strong id="steps-done">0</strong> / 13 hoàn thành</span>
+        <span class="section-label">15-Step SDLC Pipeline</span>
+        <span class="progress-count"><strong id="steps-done">0</strong> / 15 hoàn thành</span>
       </div>
       <div class="steps-track" id="steps-track"></div>
     </div>
@@ -652,6 +652,7 @@ const STEPS = [
   { role: 'tech_lead',    label: 'Tech Lead', name: 'Code Review' },
   { role: 'tester',      label: 'Tester',    name: 'Testing & Quality' },
   { role: 'devsecops',    label: 'DevSecOps', name: 'CI/CD & Infra' },
+  { role: 'clarifier',   label: 'Clarifier', name: 'Assumption & Gap Review' },
 ];
 const POLL_MS = 2500;
 
