@@ -3,7 +3,7 @@ workflow.py — Bộ điều phối SDLC workflow dùng LangGraph.
 
 Cấu trúc đồ thị (tuần tự nghiêm ngặt)
 --------------------------------------
-    ba -> pm -> sa -> ta -> designer -> tl -> fe -> mobile -> dba -> be -> da -> tech_lead -> tester -> devsecops -> END
+    ba -> pm -> sa -> ta -> designer -> tl -> fe -> mobile -> dba -> be -> da -> tech_lead -> tester -> devsecops -> clarifier -> END
 
 Mỗi node thực thi ba giai đoạn:
   1. Tổng hợp context  — chèn output (đã cắt ngắn) từ các bước phụ thuộc.
@@ -84,6 +84,9 @@ Critical rules — apply to every response:
 9. If actual source code is not provided, clearly label your output as Design Review, not Code Review. Do not invent file names, line numbers, or PR comments.
 10. Complete sections in order. If context budget is exhausted before all sections are done, mark remaining sections as [Deferred — insufficient input] and stop cleanly. Do not produce partial sentences or half-filled tables.
 11. LANGUAGE: Respond in English only. Do not write in Vietnamese, even if the user input or project context is in Vietnamese. All section headings, labels, table headers, and prose must be in English.
+12. CROSS-AGENT CITATIONS: Whenever a decision, design choice, or data element traces back to a prior agent's output, cite it explicitly using the format "Agent §Section" (e.g., "per BA §3 FR-01", "per SA §3 /api/auth/login", "per TL §4 FE Task #3", "per Designer §5 Screen S-02"). Do NOT silently consume upstream information without citation.
+13. INTRA-DOCUMENT LINKAGE: For every section in your output, add a brief note stating which other sections within this document it connects to, using "→ see §N" notation (e.g., "→ see §5 API Integration Map", "→ see §3 Component Breakdown"). This makes the dependency graph within your output explicit.
+14. DEPTH OVER SUMMARY: Every section must contain complete, actionable, implementation-ready detail — not a summary or placeholder. Tables must have real data rows derived from the provided context. Bullet points must be specific (names, values, IDs), not generic descriptions. If you find yourself writing a generic statement like "handle errors appropriately", replace it with the exact error codes, HTTP statuses, and recovery actions required.
 """
 
 
@@ -141,6 +144,7 @@ def _truncate(text: str, max_chars: int = MAX_PREV_OUTPUT_CHARS) -> str:
 
 
 # Models that emit <think>...</think> chain-of-thought blocks — stripped from output.
+# Values are substrings matched against model names (e.g. "qwen3" matches "qwen3.6:35b").
 _REASONING_MODELS: frozenset[str] = frozenset({"phi4-mini-reasoning", "phi4-reasoning", "qwq", "deepseek-r1", "qwen3"})
 
 
@@ -163,14 +167,18 @@ def _get_num_ctx(model: str) -> int:
 
 # Giới hạn chars tối đa MỖI dep output theo role (để tránh overflow context window)
 _PER_DEP_CHARS: dict[str, int] = {
-    "tech_lead": 800,    # 5 deps × 800 = 4 000 chars ≈ 1 000 tokens
+    "tech_lead":  800,    # 5 deps × 800 = 4 000 chars ≈ 1 000 tokens
     "devsecops": 1_000,  # 4 deps × 1 000 = 4 000 chars ≈ 1 000 tokens
     "tester":    3_000,  # 5 deps × 3 000 = 15 000 chars ≈ 3 700 tokens
+    "clarifier": 1_500,  # 14 deps × 1 500 = 21 000 chars ≈ 5 250 tokens
 }
 
 
 # Roles sinh code/config theo từng file riêng biệt (loop-per-file approach).
 # Không inject _FILE_OUTPUT_INSTRUCTION nữa vì một số model có thể lặp lại template verbatim.
+# NOTE: "da" is intentionally absent — DA runs via _call_agent (produces a full analysis
+# report in one shot). artifacts.py ARTIFACT_ROLES *does* include "da" so any code blocks
+# in the DA output are still extracted to disk after the fact.
 _ARTIFACT_ROLES: frozenset[str] = frozenset(
     {"fe", "mobile", "be", "dba", "devsecops", "tech_lead"}
 )
@@ -277,7 +285,9 @@ def _compute_extra_instruction(role: str, tech_stack: list[str] | None) -> str:
             )
         return ""
 
-    db_type = _detect_db_type(tech_stack)
+    combined = " ".join(t.lower() for t in tech_stack)
+    db_type  = _detect_db_type(tech_stack)
+
     if role == "dba":
         if db_type == "nosql":
             return (
@@ -292,21 +302,70 @@ def _compute_extra_instruction(role: str, tech_stack: list[str] | None) -> str:
                 "Create both SQL DDL (schema.sql) AND Mongoose models (.ts). "
                 "SQL for relational data, MongoDB for document data."
             )
+
     if role == "fe":
+        if "vue" in combined:
+            return (
+                "Write real Vue 3 component with Composition API, TypeScript, and template markup. "
+                "No license headers."
+            )
+        if "angular" in combined:
+            return "Write real Angular component with TypeScript, decorators, and template. No license headers."
+        if "svelte" in combined:
+            return "Write real Svelte component with TypeScript and reactive syntax. No license headers."
+        # Default: React / Next.js
         return (
             "Write real React/TypeScript component with JSX markup, hooks, and props interface. "
             "No license headers."
         )
+
     if role == "mobile":
+        if "react native" in combined or "expo" in combined:
+            return (
+                "Write real React Native component with TypeScript, JSX UI code, and StyleSheet. "
+                "No license headers."
+            )
+        if "flutter" in combined or "dart" in combined:
+            return "Write real Flutter/Dart widget with actual UI code. No license headers."
+        # Default: offer both options
         return (
             "Write real Flutter/Dart widget or React Native component with actual UI code. "
             "No license headers."
         )
+
     if role == "be":
+        if "fastapi" in combined or (
+            "python" in combined and "django" not in combined and "flask" not in combined
+        ):
+            return (
+                "Write real FastAPI route with Pydantic models and async business logic. "
+                "No license headers."
+            )
+        if "django" in combined:
+            return (
+                "Write real Django view or DRF ViewSet with serializers and business logic. "
+                "No license headers."
+            )
+        if "flask" in combined:
+            return "Write real Flask route with request parsing and business logic. No license headers."
+        if "express" in combined and "nest" not in combined:
+            return (
+                "Write real Express.js route with TypeScript types and business logic. "
+                "No license headers."
+            )
+        if "spring" in combined or "java" in combined or "kotlin" in combined:
+            return (
+                "Write real Spring Boot service and controller with annotations and business logic. "
+                "No license headers."
+            )
+        if "go" in combined or "golang" in combined:
+            return "Write real Go HTTP handler with struct types and business logic. No license headers."
+        # Default: NestJS
         return (
             "Write real NestJS service, controller, or DTO with actual business logic. "
             "No license headers."
         )
+
     if role == "devsecops":
         return (
             "Write real Dockerfile, docker-compose.yml, or CI/CD YAML with working config. "
@@ -473,6 +532,9 @@ def _call_agent(
         num_ctx=_get_num_ctx(agent.model),
         request_timeout=float(OLLAMA_REQUEST_TIMEOUT),
     )
+    # Compute once — reused in both the primary call and the retry branch.
+    is_reasoning = any(m in agent.model.lower() for m in _REASONING_MODELS)
+
     messages = [
         SystemMessage(content=COMMON_AGENT_RULES + "\n\n---\n\n" + agent.system_prompt),
         HumanMessage(content=context),
@@ -481,7 +543,7 @@ def _call_agent(
     result   = str(response.content)
 
     # Strip chain-of-thought blocks from reasoning models.
-    if any(m in agent.model.lower() for m in _REASONING_MODELS):
+    if is_reasoning:
         result = _strip_thinking(result)
 
     if len(result.strip()) < 30:
@@ -495,7 +557,7 @@ def _call_agent(
             HumanMessage(content=trimmed),
         ])
         result = str(response.content)
-        if any(m in agent.model.lower() for m in _REASONING_MODELS):
+        if is_reasoning:
             result = _strip_thinking(result)
 
     return result
@@ -727,11 +789,13 @@ def run_single_step(
             f"trừ khi được yêu cầu rõ ràng.\n{stack_lines}"
         )
 
+    # Apply same per-dep char limits as the workflow node to avoid context overflow.
+    dep_max_chars = _PER_DEP_CHARS.get(role, MAX_PREV_OUTPUT_CHARS)
     for dep in agent.depends_on:
         if dep in step_outputs:
             dep_name = AGENTS[dep].name
             context_parts.append(
-                f"\n## Kết quả {dep_name}\n{_truncate(step_outputs[dep])}"
+                f"\n## Kết quả {dep_name}\n{_truncate(step_outputs[dep], dep_max_chars)}"
             )
 
     if extra_context:
