@@ -440,10 +440,26 @@
       padding: 16px;
       overflow-x: auto;
       margin: 1em 0;
+      /* Explicit monospace stack — Consolas/Cascadia best for box-drawing on Windows */
+      font-family: 'Cascadia Code','Cascadia Mono','Consolas','Fira Code','SF Mono','DejaVu Sans Mono','Courier New',monospace;
+      font-size: 12.5px;
+      line-height: 1.45;           /* tighter for diagram alignment */
+      font-variant-ligatures: none; /* prevent |> → ⇒ substitutions that shift widths */
+      tab-size: 4;
     }
-    .md pre code { background: none; border: none; padding: 0; color: var(--text); font-size: .9em; }
-    .md table { border-collapse: collapse; width: 100%; margin: 1em 0; }
-    .md th, .md td { border: 1px solid var(--border); padding: 7px 12px; text-align: left; font-size: 13px; }
+    .md pre code { background: none; border: none; padding: 0; color: var(--text); font-size: 1em;
+      font-family: inherit; /* keep the same stack — don't inherit from .md code */ }
+    /* Wrap tables so wide content scrolls horizontally instead of overflowing */
+    .md table { border-collapse: collapse; width: max-content; min-width: 100%; margin: 0; }
+    .md .table-wrap { overflow-x: auto; width: 100%; margin: 1em 0;
+      /* thin custom scrollbar */
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+    .md .table-wrap::-webkit-scrollbar { height: 6px; }
+    .md .table-wrap::-webkit-scrollbar-track { background: transparent; }
+    .md .table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .md th, .md td { border: 1px solid var(--border); padding: 7px 12px; text-align: left; font-size: 13px; white-space: nowrap; }
     .md th { background: var(--surface2); font-weight: 700; }
     .md tr:nth-child(even) { background: rgba(255,255,255,.02); }
 
@@ -545,9 +561,12 @@
     /* Override hljs background to match theme */
     .hljs { background: var(--surface) !important; }
     /* Markdown code blocks: scrollable, not overflowing */
-    .md pre { max-height: 420px; overflow-y: auto; overflow-x: auto;
-              border-radius: 6px; margin: 8px 0; }
-    .md pre code { font-size: 12px; line-height: 1.5; }
+    .md pre { max-height: 520px; overflow-y: auto; overflow-x: auto;
+              border-radius: 6px; margin: 8px 0;
+              scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    .md pre::-webkit-scrollbar { width: 5px; height: 5px; }
+    .md pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .md pre code { font-size: 12.5px; line-height: 1.45; }
     .md code { font-size: 12px; }
   </style>
 </head>
@@ -957,6 +976,45 @@ function renderTabBody(data) {
     if (window.hljs) {
       body.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
     }
+    // Wrap every table in a scrollable container so wide tables don't overflow
+    body.querySelectorAll('.md table').forEach(tbl => {
+      const wrap = document.createElement('div');
+      wrap.className = 'table-wrap';
+      tbl.parentNode.insertBefore(wrap, tbl);
+      wrap.appendChild(tbl);
+    });
+    // Promote plain-text ASCII diagrams to <pre> so they render in monospace.
+    // The LLM sometimes omits code fences around sequence/flow diagrams, causing
+    // them to render as proportional-font paragraphs and misalign.
+    (function fixAsciiDiagrams(root) {
+      // Decode a paragraph's innerHTML to plain text, converting <br> → '\n'
+      function innerText(el) {
+        return el.innerHTML
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+          .replace(/<[^>]+>/g, '');
+      }
+      // Heuristics for ASCII art / sequence / flow diagrams:
+      //   1. Contains Unicode box-drawing characters (─│┌┐└┘├┤┬┴┼┃━…)
+      //   2. Contains ≥4 pipe '|' chars AND ≥3 consecutive dashes/arrows
+      //   3. Line looks like [Label]──── style actor boxes
+      const BOX   = /[─│┌┐└┘├┤┬┴┼┃━╌╍╎╏┄┅┆┇┈┉┊┋]/;
+      const PIPES = /\|/g;
+      const DASHES= /[-─]{3,}|[—]{2,}/;
+      const ACTOR = /\[[A-Za-z].*?\].*[-─|]/;
+      root.querySelectorAll('.md p').forEach(el => {
+        // Skip if already inside a pre/code
+        if (el.closest('pre, code')) return;
+        const text = innerText(el);
+        const pipes = (text.match(PIPES) || []).length;
+        if (BOX.test(text) || (pipes >= 4 && DASHES.test(text)) || ACTOR.test(text)) {
+          const pre = document.createElement('pre');
+          pre.className = 'ascii-art';
+          pre.textContent = text;
+          el.parentNode.replaceChild(pre, el);
+        }
+      });
+    })(body);
 
   } else if (_hasKey && (!output || !output.trim())) {
     // Hoàn thành nhưng output rỗng (model quá nhỏ hoặc context overflow)
