@@ -195,6 +195,7 @@ services:
       RAG_EMBEDDING_MODEL: ${EMBEDDING_MODEL}
       RAG_TOP_K: ${RAG_TOP_K}
       USER_AGENT: "YAN-AI/1.0"
+      CORS_ALLOW_ORIGIN: "http://18.191.161.84:8085,http://localhost:8085,http://127.0.0.1:8085"
     networks:
       - yan
     depends_on:
