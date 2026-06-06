@@ -118,6 +118,7 @@ class AgentConfig:
     depends_on: list[str] = field(default_factory=list)
     # Chuỗi gợi ý truy vấn RAG riêng cho từng role. Thay vì dùng nguyên user_input,
     # rag-api sẽ nhận chuỗi này để lấy context chính xác hơn cho từng vai trò SDLC.
+    rag_query_hint: str = ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
