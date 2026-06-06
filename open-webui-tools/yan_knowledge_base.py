@@ -1,11 +1,55 @@
 """
 title: YAN Knowledge Base
 author: YAN
-description: Query nội bộ — hỏi đáp từ các tài liệu PRD, spec, architecture đã ingest vào Qdrant qua rag-api.
-             Hỗ trợ filter theo project và module để tăng độ chính xác retrieval.
+description: >
+    Tool hỏi đáp tài liệu nội bộ qua RAG API. Cho phép chạt trực tiếp
+    với các PRD, spec, kiến trúc, schema đã được ingest vào Qdrant.
+    Hỗ trợ lọc kết quả theo project và module để tăng độ chính xác retrieval.
 required_open_webui_version: 0.3.0
 requirements: requests
 version: 1.1.0
+
+Mô tả chi tiết
+--------------
+Tool này là giao tiếp trực tiếp giữa Open WebUI và YAN RAG API (cổng 8090).
+Khi được gọi, tool gửi câu hỏi của người dùng tới endpoint POST /ask của
+rag-api, nhận kết quả RAG hybrid (Qdrant vector search + Neo4j graph enrichment
++ Ollama LLM), và trả về câu trả lời kèm danh sách file nguồn.
+
+Valves (biến cấu hình)
+----------------------
+    rag_api_url      URL của rag-api trong nội bộ Docker network.
+                     Mặc định: http://rag-api:8090
+                     Khi gọi từ ngoài container: http://localhost:8090
+
+    timeout          Timeout tính bằng giây cho mỗi request.
+                     Mặc định: 120 giây.
+
+    top_k            Số chunk kết quả trả về. Null = dùng giá trị RAG_TOP_K
+                     trong env của rag-api (mặc định 5).
+
+    default_project  Tên project mặc định nếu người dùng không chỉ định.
+                     Null = tìm kiếm trên tất cả collection.
+
+    default_module   Tên module mặc định. Null = toàn bộ project.
+                     Ví dụ: auth, billing, marketplace.
+
+Hàm công khai
+--------------
+    ask_internal_docs(question, project, module) → str
+        Tham số:
+          question  Câu hỏi cần trả lời. Không được rỗng.
+          project   Tên project cần query. Null = search tất cả project.
+          module    Lọc theo module trong project. Null = toàn bộ project.
+        Trả về:
+          Câu trả lời dưới dạng text, kèm danh sách file nguồn
+          và điểm similarity score.
+
+Ví dụ sử dụng trong chat
+-------------------------
+    Tìm trong knowledge base: JWT refresh token flow hoạt động thế nào?
+    Hỏi về billing schema của dự án yanlib, module billing
+    Kiến trúc marketplace là gì? (project=marketplace)
 """
 
 import requests
@@ -41,13 +85,18 @@ class Tools:
         self.valves = self.Valves()
 
     def ask_internal_docs(self, question: str, project: str | None = None, module: str | None = None) -> str:
-        """
-        Hỏi-đáp với tài liệu nội bộ: PRD, spec, architecture, billing, auth, marketplace, v.v.
-        Dùng khi cần tìm thông tin trong các tài liệu kỹ thuật của dự án.
-        :param question: Câu hỏi cần trả lời
-        :param project: Tên project cần query (ví dụ: yanlib). Để trống để search tất cả.
-        :param module: Lọc theo module trong project (ví dụ: auth, billing, marketplace). Để trống để search toàn bộ project.
-        :return: Câu trả lời kèm tên file nguồn
+        """Hỏi đáp với tài liệu nội bộ của dự án qua RAG API.
+
+        Dùng khi cần tìm thông tin trong các tài liệu kỹ thuật đã ingest:
+        PRD, spec, kiến trúc, schema, auth, billing, marketplace...
+
+        Tham số:
+            question: Câu hỏi cần trả lời. Không được rỗng.
+            project:  Tên project cần query (ví dụ: yanlib). Null = search tất cả.
+            module:   Lọc theo module trong project (ví dụ: auth, billing). Null = toàn project.
+
+        Trả về:
+            Câu trả lời kèm danh sách file nguồn và điểm similarity score.
         """
         resolved_project = project or self.valves.default_project
         resolved_module = module or self.valves.default_module

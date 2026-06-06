@@ -2,11 +2,75 @@
 title: YAN SDLC Agent Workflow
 author: YAN
 description: >
-    Khởi chạy SDLC Agent Workflow 15 bước: BA → PM → SA → TA → Designer → Team Lead → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps → Clarifier.
-  Hỗ trợ chạy full workflow (async + polling) hoặc từng agent đơn lẻ (sync).
+    Tool khởi chạy SDLC Agent Workflow 15 bước toàn diện:
+    BA → PM → SA → TA → Designer → Team Lead → FE → Mobile → DBA
+    → BE → DA → Tech Lead → Tester → DevSecOps → Clarifier.
+    Hỗ trợ chạy full workflow (async + polling) hoặc từng agent
+    đơn lẻ (sync). Kết quả bao gồm output markdown, file code
+    được trích xuất, và Clarifier audit report.
 required_open_webui_version: 0.3.0
 requirements: requests
 version: 2.0.0
+
+Mô tả chi tiết
+--------------
+Tool là giao tiếp trực tiếp giữa Open WebUI và YAN Agent API (cổng 8091).
+Cho phép người dùng khởi động và theo dõi toàn bộ SDLC pipeline AI
+trực tiếp từ giao diện chat mà không cần gọi API thủ công.
+
+Valves (biến cấu hình)
+----------------------
+    agent_api_url      URL của agent-api trong nội bộ Docker network.
+                       Mặc định: http://agent-api:8091
+
+    timeout            Timeout (giây) cho mỗi single-step agent call.
+                       Mặc định: 600 giây.
+
+    poll_interval      Khoảng cách (giây) giữa các lần poll trạng thái workflow.
+                       Mặc định: 15 giây.
+
+    poll_max_attempts  Số lần poll tối đa trước khi timeout.
+                       Mặc định: 120 (120 × 15s = 30 phút).
+                       Tăng nếu workflow dùng model lớn, chạy lâu hơn.
+
+    rag_enabled        Có query RAG knowledge base cho mỗi agent step không.
+                       Mặc định: true. Tắt khi không có tài liệu đã ingest.
+
+    rag_top_k          Số chunk RAG mỗi agent nhận. Mặc định: 5.
+
+    default_project    Project mặc định để lọc RAG. Null = không lọc.
+
+Hàm công khai
+--------------
+    run_sdlc_workflow(user_input, project, tech_stack) → str
+        Khởi chạy full workflow 15 bước, poll đến khi hoàn tất,
+        trả về summary kết quả (status, thời gian, output mỗi bước).
+        Tham số:
+          user_input   Mô tả yêu cầu / mục tiêu kiếnh doanh. Bắt buộc.
+          project      Tên project để lọc RAG. Tùy chọn.
+          tech_stack   Chuỗi các công nghệ bắt buộc, phân cách bằng dấu phẩy.
+                       Ví dụ: "NestJS, React, PostgreSQL, Kubernetes"
+
+    run_agent_step(role, user_input, project, tech_stack) → str
+        Chạy đồng bộ một agent đơn lẻ, trả về output ngay.
+        Hữu ích khi muốn xem nhanh kết quả của một bước cụ thể.
+        Ví dụ: role="sa" để xem kiến trúc giải pháp.
+
+    get_workflow_result(workflow_id, role) → str
+        Lấy output của một workflow đã chạy xong theo ID.
+        role tùy chọn: nếu có thì chỉ trả output của role đó.
+        Nếu không có role: trả summary toàn bộ workflow.
+
+    list_agent_roles() → str
+        Liệt kê tất cả 15 role theo thứ tự thực thi, kèm tên, model
+        và danh sách phụ thuộc. Dùng để khám phá cấu hình hiện tại.
+
+Ví dụ sử dụng trong chat
+-------------------------
+    Chạy SDLC workflow: xây dựng module marketplace B2B, project=yanlib
+    Chạy agent sa: thiết kế kiến trúc hệ thống authentication đa tenant
+    Lấy kết quả workflow abc123, role=be
+    Liệt kê tất cả agent roles
 """
 
 import time
@@ -14,7 +78,8 @@ import time
 import requests
 from pydantic import BaseModel, Field
 
-# Thứ tự thực thi chuẩn — phải khớp với WORKFLOW_STEPS trong agent-api/agents.py
+# Danh sách role hợp lệ theo thứ tự thực thi chuẩn của SDLC pipeline.
+# Phải khớp chính xác với WORKFLOW_STEPS trong agent-api/agents.py.
 _VALID_ROLES = [
     "ba",
     "pm",

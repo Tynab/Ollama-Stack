@@ -1,24 +1,77 @@
 """
-artifacts.py — Trích xuất và lưu trữ file code từ output của SDLC agents.
+artifacts.py — Trích xuất và lưu trữ file code từ output markdown của SDLC agents
+==================================================================================
 
-Sau khi mỗi bước workflow hoàn thành, output markdown được quét để tìm:
-  1. Explicit ### FILE: path/to/file.ext  (ưu tiên — định dạng có cấu trúc)
-  2. Code block có dòng comment đầu chứa tên file (// filename: ...)
-  3. Bold/heading text ngay trước code block (**src/Login.tsx**)
-  4. Fallback: tự đặt tên theo ngôn ngữ + index (lang-01.ts)
+Mô tả
+-----
+Sau khi mỗi coding agent hoàn thành (fe, mobile, be, dba, da, tech_lead,
+devsecops), toàn bộ output markdown được lưu và quét để tách riêng từng
+file code, sau đó ghi ra disk theo layout chuẩn.
 
-Full raw output luôn được lưu dưới tên _output.md.
+Layout thư mục artifact
+-----------------------
+    /data/artifacts/{workflow_id}/{role}/
+        _output.md          — Toàn bộ markdown output gốc của agent (luôn có)
+        src/pages/Login.tsx — File được trích xuất từ directive ### FILE:
+        src/hooks/useAuth.ts
+        schema.sql
+        Dockerfile
+        ...
 
-Layout thư mục:
-  /data/artifacts/{workflow_id}/{role}/
-    _output.md          ← luôn có: toàn bộ markdown output của agent
-    src/Login.tsx       ← file code được trích xuất
-    schema.sql          ← v.v.
+Thứ tự ưu tiên nhận diện tên file trong markdown
+-------------------------------------------------
+1. Directive có cấu trúc (ưu tiên cao nhất):
+       ### FILE: src/components/Button.tsx
+       ```typescript
+       ...
+       ```
+   Agent được yêu cầu dùng định dạng này trong system prompt.
+
+2. Dòng comment đầu tiên của code block:
+       ```typescript
+       // filename: src/components/Button.tsx
+       ...
+       ```
+   Hỗ trợ các prefix: //, #, *, --, /* và các biến thể như "file:", "filename:".
+
+3. Bold hoặc heading ngay trước code block:
+       **src/components/Button.tsx**
+       ```typescript
+       ...
+       ```
+
+4. Fallback — đặt tên tự động:
+   Khi không tìm được tên file từ bất kỳ pattern nào, file được đặt tên
+   theo ngôn ngữ và index: typescript-01.ts, python-02.py, yaml-03.yml...
+   Dockerfile được xử lý đặc biệt (không có extension).
+
+Bảo mật đường dẫn
+-----------------
+_sanitize_relpath() chuẩn hóa và làm sạch mọi đường dẫn do LLM sinh ra:
+- Chuyển backslash Windows thành forward slash
+- Loại bỏ path traversal: /../, /./
+- Chỉ cho phép ký tự an toàn: chữ cái, chữ số, dấu chấm, dấu gạch ngang,
+  dấu gạch dưới và dấu slash
+- Đường dẫn rỗng sau làm sạch được thay bằng "file.txt"
+
+Hằng số xuất khẩu
+-----------------
+- ARTIFACT_ROLES:  frozenset[str] — các role có artifact được trích xuất
+- extract_and_save(role, output, workflow_id) → list[dict] — hàm chính
+- list_artifacts(workflow_id) → dict[str, list[dict]] — liệt kê artifacts
+- read_artifact(workflow_id, role, path) → str | None — đọc nội dung file
+
+Lưu ý
+-----
+Mọi exception trong quá trình trích xuất đều được bắt và ghi log warning
+— không làm dừng workflow chính. _output.md luôn được ghi trước, đảm bảo
+output thô không bao giờ bị mất dù trích xuất file code thất bại.
 """
 from __future__ import annotations
 
 import logging
 import os
+import posixpath
 import re
 from pathlib import Path
 
@@ -26,12 +79,14 @@ logger = logging.getLogger("artifacts")
 
 ARTIFACT_BASE: str = os.environ.get("ARTIFACT_DIR", "/data/artifacts")
 
-# Chỉ trích xuất artifact cho các role này
+# Chỉ trích xuất và lưu artifact cho các role coding này.
+# Planning roles (ba, pm, sa, ta...) và tester không sinh code file nên không cần trích xuất.
 ARTIFACT_ROLES: frozenset[str] = frozenset(
     {"fe", "mobile", "be", "dba", "da", "tech_lead", "devsecops"}
 )
 
-# language identifier → file extension (không có dấu chấm)
+# Bảng ánh xạ từ tên ngôn ngữ code fence sang phần mở rộng file (không có dấu chấm).
+# __dockerfile__ là sentinel đặc biệt — được xử lý riêng để tạo file "Dockerfile" không extension.
 _LANG_EXT: dict[str, str] = {
     "typescript": "ts",   "ts": "ts",
     "tsx": "tsx",
@@ -55,30 +110,46 @@ _LANG_EXT: dict[str, str] = {
     "env": "env",
 }
 
-# Khớp:  ### FILE: some/path/file.ext  rồi đến ```lang\ncontent\n```
+# Pattern ưu tiên 1: ### FILE: path/to/file.ext rồi đến code block ngay sau.
+# Đây là định dạng có cấu trúc cao nhất — agent được yêu cầu dùng pattern này.
 _FILE_HDR_RE = re.compile(
     r"###\s+FILE:\s*([^\n]+?)\s*\n```(\w*)\n(.*?)```",
     re.DOTALL,
 )
 
-# Khớp bất kỳ code block nào
+# Pattern dự phòng: khớp bất kỳ code block nào trong markdown.
 _BLOCK_RE = re.compile(r"```(\w+)?\n(.*?)```", re.DOTALL)
 
-# Tên file từ dòng comment đầu tiên của code block
+# Pattern nhận diện tên file từ dòng comment đầu tiên bên trong code block.
+# Hỗ trợ các prefix comment: //, #, *, -- và biến thể "file:", "filename:".
 _CMT_FNAME_RE = re.compile(
     r"^[/#*\-]+\s*(?:file(?:name)?:\s*)?([a-zA-Z0-9_.][^\s]*\.[a-zA-Z0-9]{1,10})\s*$",
     re.IGNORECASE,
 )
 
-# Bold / heading ngay trước code block — ví dụ: **src/Login.tsx** hoặc ### src/Login.tsx
+# Pattern nhận diện tên file từ bold/heading Markdown ngay trước code block.
+# Ví dụ: **src/Login.tsx** hoặc ### src/Login.tsx ngay trước ```typescript.
 _PRE_FNAME_RE = re.compile(
     r"(?:\*{1,2}|`|#{1,4}\s+)([a-zA-Z0-9_.][^\s*`\n]*\.[a-zA-Z0-9]{1,10})`?\*{0,2}\s*:?\s*\n?\s*$"
 )
 
 
 def _sanitize_relpath(raw: str) -> str:
-    """Loại bỏ path-traversal và ký tự không hợp lệ."""
-    p = raw.replace("..", "").lstrip("/").strip()
+    """Chuẩn hóa và làm sạch đường dẫn tương đối do LLM sinh ra.
+
+    Bảo vệ chống path traversal và ký tự không hợp lệ:
+    1. Chuyển backslash Windows thành forward slash.
+    2. Loại bỏ /../ và /./ bằng posixpath.normpath.
+    3. Xóa các thành phần .. còn lại và dấu / đầu tiên.
+    4. Chỉ cho phép: chữ cái, chữ số, dấu chấm, gạch ngang, gạch dưới, slash.
+    5. Trả về "file.txt" nếu kết quả rỗng sau làm sạch.
+    """
+    # Chuyển backslash Windows → forward slash, sau đó resolve path traversal.
+    normalized = posixpath.normpath(raw.replace("\\", "/"))
+    # Loại bỏ .. còn lại và dấu / đầu tiên sau normpath.
+    parts = [p for p in normalized.split("/") if p and p != ".."]
+    p = "/".join(parts)
+    # Chỉ cho phép ký tự an toàn: word chars, dấu chấm, gạch ngang, gạch dưới, slash.
     p = re.sub(r"[^\w.\-/]", "_", p)
     return p or "file.txt"
 
@@ -99,9 +170,11 @@ def _default_name(lang: str, idx: int) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def extract_and_save(role: str, output: str, workflow_id: str) -> list[dict]:
-    """
-    Trích xuất code block có tên từ *output*, ghi file, trả về danh sách metadata.
-    Non-fatal: lỗi được log, trả về list rỗng (hoặc một phần) nếu thất bại.
+    """Trích xuất các code block có tên file từ *output*, ghi ra disk, trả về danh sách metadata.
+
+    Bao bọc _do_extract() bằng try/except để không làm crash workflow chính.
+    Nếu role không nằm trong ARTIFACT_ROLES hoặc output rỗng, trả về [] ngay lập tức.
+    Non-fatal: lỗi trích xuất chỉ ghi warning log, không ảnh hưởng đến workflow.
     """
     if role not in ARTIFACT_ROLES:
         return []
@@ -117,11 +190,12 @@ def extract_and_save(role: str, output: str, workflow_id: str) -> list[dict]:
 def _do_extract(role: str, output: str, workflow_id: str) -> list[dict]:
     base = Path(ARTIFACT_BASE) / workflow_id / role
     base.mkdir(parents=True, exist_ok=True)
+    base_resolved = base.resolve()  # compute once; passed to every _save call
 
     artifacts: list[dict] = []
     seen: set[str] = set()
 
-    # ── Pass 1: explicit ### FILE: headers ──────────────────────────
+    # ── Pass 1: tìm và lưu các file theo directive ### FILE: (ưu tiên cao nhất) ───────────────
     structured_spans: list[tuple[int, int]] = []
     for m in _FILE_HDR_RE.finditer(output):
         raw_path = m.group(1)
@@ -130,13 +204,13 @@ def _do_extract(role: str, output: str, workflow_id: str) -> list[dict]:
         if not content.strip():
             continue
         rel = _sanitize_relpath(raw_path)
-        _save(base, role, rel, content, lang, artifacts, seen)
+        _save(base, base_resolved, role, rel, content, lang, artifacts, seen)
         structured_spans.append((m.start(), m.end()))
 
     def _in_structured(start: int) -> bool:
         return any(s <= start <= e for s, e in structured_spans)
 
-    # ── Pass 2: free code blocks (fallback) ─────────────────────────
+    # ── Pass 2: code block tự do (dự phòng khi không có ### FILE: directive) ─────────────
     counter = [0]
     for m in _BLOCK_RE.finditer(output):
         if _in_structured(m.start()):
@@ -149,14 +223,14 @@ def _do_extract(role: str, output: str, workflow_id: str) -> list[dict]:
         filename     = None
         save_content = content
 
-        # Thử tên file từ dòng comment đầu
+        # Thử tên file từ dòng comment đầu tiên bên trong code block.
         if lines:
             m2 = _CMT_FNAME_RE.match(lines[0].strip())
             if m2:
                 filename     = m2.group(1).strip()
                 save_content = "\n".join(lines[1:])
 
-        # Thử tên file từ text ngay trước code block
+        # Thử tên file từ bold/heading Markdown ngay trước code block.
         if not filename:
             pre = output[: m.start()].rstrip()
             m3  = _PRE_FNAME_RE.search(pre)
@@ -168,9 +242,10 @@ def _do_extract(role: str, output: str, workflow_id: str) -> list[dict]:
             filename = _default_name(lang, counter[0])
 
         rel = _sanitize_relpath(filename)
-        _save(base, role, rel, save_content, lang, artifacts, seen)
+        _save(base, base_resolved, role, rel, save_content, lang, artifacts, seen)
 
-    # ── Luôn lưu toàn bộ output raw dưới dạng _output.md ───────────
+    # ── Luôn lưu toàn bộ output thô dưới dạng _output.md ──────────────────────────────
+    # Đây là bản gốc đầy đủ không qua xử lý — đảm bảo output không bao giờ bị mất.
     md_path = base / "_output.md"
     md_path.write_text(output, encoding="utf-8")
     artifacts.insert(0, {
@@ -188,6 +263,7 @@ def _do_extract(role: str, output: str, workflow_id: str) -> list[dict]:
 
 def _save(
     base: Path,
+    base_resolved: Path,
     role: str,
     rel: str,
     content: str,
@@ -195,14 +271,21 @@ def _save(
     artifacts: list,
     seen: set,
 ) -> None:
+    """Ghi nội dung file vào disk tại đường dẫn *base/rel*.
+
+    Kiểm tra path confinement trước khi ghi để đảm bảo file luôn nằm trong
+    thư mục *base* — ngăn chặn path traversal qua workflow_id hoặc role giả mạo.
+    Bỏ qua file trùng tên (rel đã có trong seen) để tránh ghi đè artifact.
+    Non-fatal: lỗi ghi file chỉ ghi warning log, không dừng extraction.
+    """
     if rel in seen:
         return
     seen.add(rel)
     dest = base / rel
-    # Defense-in-depth: confirm the resolved path stays within base (guards against
-    # any edge case that bypasses _sanitize_relpath).
+    # Defense-in-depth: xác nhận đường dẫn đã resolve vẫn nằm trong base.
+    # Bảo vệ khỏi các edge case không bị _sanitize_relpath chặn được.
     try:
-        dest.resolve().relative_to(base.resolve())
+        dest.resolve().relative_to(base_resolved)
     except ValueError:
         logger.warning("Path confinement blocked write outside base: %s", dest)
         return
@@ -222,7 +305,11 @@ def _save(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def list_artifacts(workflow_id: str) -> dict[str, list[dict]]:
-    """Quét thư mục artifact đã lưu, trả về {role: [file_meta]}."""
+    """Quét thư mục artifact của *workflow_id*, trả về dict {role: [file_metadata]}.
+
+    Mỗi phần tử metadata bao gồm: path, filename, language, size (bytes).
+    Trả về {} nếu workflow chưa có artifact hoặc thư mục không tồn tại.
+    """
     wf_dir = Path(ARTIFACT_BASE) / workflow_id
     if not wf_dir.exists():
         return {}
@@ -248,15 +335,22 @@ def list_artifacts(workflow_id: str) -> dict[str, list[dict]]:
 
 
 def read_artifact(workflow_id: str, role: str, rel_path: str) -> tuple[str, str] | None:
-    """
-    Trả về (content, language) hoặc None nếu không tìm thấy.
-    *rel_path* là đường dẫn tương đối từ thư mục role.
+    """Đọc và trả về nội dung của một file artifact cụ thể.
+
+    Tham số:
+        workflow_id: ID của workflow đã chạy.
+        role: Tên role agent (ví dụ: "fe", "be").
+        rel_path: Đường dẫn tương đối từ thư mục role (ví dụ: "src/Login.tsx").
+
+    Trả về:
+        (content, language): nội dung file và tên ngôn ngữ.
+        None: nếu file không tồn tại hoặc path bị chặn do bảo mật.
     """
     safe = _sanitize_relpath(rel_path)
     base = Path(ARTIFACT_BASE)
     path = base / workflow_id / role / safe
-    # Ensure the resolved path stays within ARTIFACT_BASE to block traversal via
-    # crafted workflow_id or role parameters.
+    # Đảm bảo đường dẫn đã resolve nằm trong ARTIFACT_BASE để chặn traversal
+    # qua workflow_id hoặc role parameter giả mạo từ HTTP request.
     try:
         path.resolve().relative_to(base.resolve())
     except ValueError:
