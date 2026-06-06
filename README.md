@@ -66,16 +66,16 @@ Người dùng
     │
     ├── Open WebUI (8085) ──────────────────────────────────────────────┐
     │       │                                                           │
-    │       ├── yan_knowledge_base.py ──► RAG API (8090)               │
-    │       │                               ├── Qdrant (6333)          │
-    │       │                               │     └── vector search    │
-    │       │                               ├── Neo4j (7687)           │
-    │       │                               │     └── graph enrichment │
-    │       │                               └── Ollama (11434)         │
-    │       │                                     ├── embed model      │
-    │       │                                     └── chat model       │
+    │       ├── yan_knowledge_base.py ──► RAG API (8090)                │
+    │       │                               ├── Qdrant (6333)           │
+    │       │                               │     └── vector search     │
+    │       │                               ├── Neo4j (7687)            │
+    │       │                               │     └── graph enrichment  │
+    │       │                               └── Ollama (11434)          │
+    │       │                                     ├── embed model       │
+    │       │                                     └── chat model        │
     │       │                                                           │
-    │       └── yan_agent_workflow.py ──► Agent API (8091) ────────────┘
+    │       └── yan_agent_workflow.py ──► Agent API (8091) ─────────────┘
     │                                        └── LangGraph SDLC Workflow
     │                                              ├── 15 agent nodes
     │                                              ├── Ollama (per-role models)
@@ -89,11 +89,11 @@ Người dùng
 ### Kiến trúc Hybrid RAG (rag-api)
 
 ```
-POST /ask  ─┬─► Qdrant  vector search  (cosine similarity, top-k chunks)
+POST /ask ───┬───► Qdrant  vector search    (cosine similarity, top-k chunks)
              │
-             └─► Neo4j   graph search   (entity co-occurrence traversal)
-                    │
-                    └── merge & rank ──► Ollama (chat model) ──► trả lời
+             └───► Neo4j   graph search     (entity co-occurrence traversal)
+                     │
+                     └──── merge & rank ──► Ollama (chat model) ──► trả lời
 ```
 
 Mỗi request `/ask`:
@@ -134,9 +134,7 @@ curl -s -X POST http://localhost:8090/ask \
 Agent API điều phối một pipeline 15 AI agents chạy tuần tự theo mô hình LangGraph StateGraph. Mỗi agent nhận output rút gọn của các agent phụ thuộc làm context, đồng thời có thể truy vấn RAG knowledge base với `rag_query_hint` riêng để tăng độ chính xác.
 
 ```
-BA → PM → SA → TA → Designer → Team Lead
-→ FE → Mobile → DBA → BE → DA
-→ Tech Lead → Tester → DevSecOps → Clarifier
+BA → PM → SA → TA → Designer → Team Lead → FE → Mobile → DBA → BE → DA → Tech Lead → Tester → DevSecOps → Clarifier
 ```
 
 | Bước | Role | Tên đầy đủ | Model | Phụ thuộc | Đầu ra chính |
@@ -172,13 +170,12 @@ Các agent `fe`, `mobile`, `be`, `dba`, `da`, `tech_lead`, `devsecops` sử dụ
 
 **Task Completion Checklist:**
 Cuối output của mỗi engineer agent luôn có bảng checklist đối chiếu từng task TL với file đã sinh:
-```
+
 | # | Task | Priority | Status | File(s) / Section |
 |---|------|----------|--------|-------------------|
 | 1 | Setup project scaffolding | P0 | ✅ Done | `src/main.tsx`, `vite.config.ts` |
 | 2 | Implement login form | P0 | ✅ Done | `src/pages/Login.tsx` |
 | 3 | API integration layer | P1 | ⏳ Addressed in output | — |
-```
 
 ### Clarifier Regen Loop
 
@@ -514,26 +511,26 @@ watch -n 30 'curl -s http://localhost:8091/workflow/a1b2c3d4-e5f6-7890-abcd-ef12
 
 ### Nhóm Models
 
-| Biến | Mặc định docker-compose | Mô tả |
-|---|---|---|
-| `EMBEDDING_MODEL` | — | Model embedding cho Qdrant |
-| `CHAT_MODEL` | — | Model chat cho rag-api `/ask` |
-| `CODING_PLANNER_MODEL` | `granite3.3:2b` | Model nhẹ lập kế hoạch danh sách file |
-| `BA_MODEL` | — | BA agent — phân tích nghiệp vụ |
-| `PM_MODEL` | — | PM agent — quản lý dự án |
-| `SA_MODEL` | — | SA agent — kiến trúc giải pháp |
-| `TA_MODEL` | — | TA agent — kiến trúc kỹ thuật |
-| `DA_MODEL` | — | DA agent — phân tích dữ liệu |
-| `TL_MODEL` | `phi4-mini` | Team Lead agent — lập kế hoạch task |
-| `FE_MODEL` | — | FE agent — frontend code |
-| `MOBILE_MODEL` | — | Mobile agent — mobile code |
-| `BE_MODEL` | — | BE agent — backend code |
-| `DBA_MODEL` | — | DBA agent — database schema |
-| `TECH_LEAD_MODEL` | — | Tech Lead agent — code review |
-| `DEVSECOPS_MODEL` | — | DevSecOps agent — infra / CI-CD |
-| `DESIGNER_MODEL` | — | Designer agent — UI/UX |
-| `TESTER_MODEL` | — | Tester agent — test cases |
-| `CLARIFIER_MODEL` | `qwen3.6:35b` | Clarifier agent — gap analysis |
+| Biến | Mô tả |
+|---|---|
+| `EMBEDDING_MODEL` | Model embedding cho Qdrant |
+| `CHAT_MODEL` | Model chat cho rag-api `/ask` |
+| `CODING_PLANNER_MODEL` | Model nhẹ lập kế hoạch danh sách file |
+| `BA_MODEL` | BA agent — phân tích nghiệp vụ |
+| `PM_MODEL` | PM agent — quản lý dự án |
+| `SA_MODEL` | SA agent — kiến trúc giải pháp |
+| `TA_MODEL` | TA agent — kiến trúc kỹ thuật |
+| `DA_MODEL` | DA agent — phân tích dữ liệu |
+| `TL_MODEL` | Team Lead agent — lập kế hoạch task |
+| `FE_MODEL` | FE agent — frontend code |
+| `MOBILE_MODEL` | Mobile agent — mobile code |
+| `BE_MODEL` | BE agent — backend code |
+| `DBA_MODEL` | DBA agent — database schema |
+| `TECH_LEAD_MODEL` | Tech Lead agent — code review |
+| `DEVSECOPS_MODEL` | DevSecOps agent — infra / CI-CD |
+| `DESIGNER_MODEL` | Designer agent — UI/UX |
+| `TESTER_MODEL` | Tester agent — test cases |
+| `CLARIFIER_MODEL` | Clarifier agent — gap analysis |
 
 ### Nhóm RAG API
 
@@ -1200,6 +1197,7 @@ cat data/memory/episodic/workflow_runs.jsonl | jq 'select(.steps_count < 15)'
 ```
 Tìm trong knowledge base: auth flow của yanlib hoạt động như thế nào?
 ```
+
 ```
 Tìm thông tin về billing schema trong project yanlib, module billing
 ```
@@ -1233,6 +1231,7 @@ Tìm thông tin về billing schema trong project yanlib, module billing
 ```
 Chạy SDLC workflow: xây dựng module marketplace cho ứng dụng B2B, project=myproject
 ```
+
 ```
 Chạy agent sa với yêu cầu: thiết kế kiến trúc hệ thống authentication đa tenant
 ```
