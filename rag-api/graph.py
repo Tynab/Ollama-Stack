@@ -1,15 +1,55 @@
 ﻿"""
-graph.py — Lớp tích hợp Neo4j GraphRAG.
+graph.py — Lớp tích hợp Neo4j GraphRAG cho YAN RAG stack
+==========================================================
 
-Mô hình đồ thị:
-  (:Project)-[:HAS_DOCUMENT]->(:Document)-[:HAS_CHUNK]->(:Chunk)
-  (:Chunk)-[:NEXT_CHUNK]->(:Chunk)
-  (:Chunk)-[:MENTIONS]->(:Entity)
-  (:Entity)-[:CO_OCCURS_WITH]->(:Entity)
+Mô tả
+-----
+Module quản lý toàn bộ tương tác với Neo4j: tạo/cập nhật cấu trúc đồ thị
+khi ingest tài liệu, trích xuất thực thể bằng LLM, xây dựng quan hệ
+co-occurrence, và traversal đồ thị để làm giàu kết quả tìm kiếm vector.
 
-Qdrant xử lý tìm kiếm vector; Neo4j làm giàu kết quả qua co-occurrence thực thể
-và graph traversal.  Cả hai store dùng chung Qdrant point ID làm Chunk.id
-để tham chiếu chéo liền mạch.
+Kiến trúc đồ thị
+----------------
+Cấu trúc node và relationship trong Neo4j:
+
+    (:Project {name})
+        └─[:HAS_DOCUMENT]─►
+    (:Document {id, source_file, project, module})
+        └─[:HAS_CHUNK]─►
+    (:Chunk {id, text, chunk_index, source_file, module, project})
+        ├─[:NEXT_CHUNK]─► (:Chunk)          — chuỗi chunk liên tiếp trong file
+        ├─[:MENTIONS]─► (:Entity)           — thực thể được đề cập (khi extraction bật)
+        └─[:CO_OCCURS_WITH]─► (:Entity)     — thực thể xuất hiện cùng nhau
+
+Chú ý quan trọng về Chunk.id:
+    Chunk.id = Qdrant point ID (UUID5 tất định từ path + content hash).
+    Điều này cho phép tham chiếu chéo chính xác giữa Qdrant và Neo4j
+    mà không cần join table hay mapping riêng.
+
+Tích hợp Hybrid RAG
+--------------------
+Qdrant đảm nhận tìm kiếm vector (cosine similarity) để lấy top-k chunk
+liên quan nhất về mặt ngữ nghĩa. Neo4j làm giàu kết quả bằng cách:
+    1. Với mỗi chunk tìm được từ Qdrant, tìm thêm các chunk khác đề cập
+       cùng thực thể (qua quan hệ MENTIONS + CO_OCCURS_WITH).
+    2. Trả về danh sách chunk mở rộng, đã loại trùng, sắp xếp theo score.
+Hai nguồn kết quả được gộp lại trước khi đưa vào LLM.
+
+Trích xuất thực thể (tùy chọn)
+--------------------------------
+Khi GRAPH_ENTITY_EXTRACTION=true, sau khi lưu chunk vào Neo4j, module gọi
+LLM chat model để trích xuất danh sách thực thể từ nội dung chunk:
+    - Tên thực thể (entity name)
+    - Loại thực thể (PERSON, ORG, PRODUCT, CONCEPT, LOCATION, OTHER)
+Thực thể được lưu thành node (:Entity) với quan hệ MENTIONS từ Chunk.
+Các thực thể xuất hiện trong cùng chunk sẽ có quan hệ CO_OCCURS_WITH.
+
+Chú ý hiệu suất
+---------------
+- GRAPH_ENTITY_EXTRACTION=true làm chậm quá trình ingest đáng kể vì gọi LLM
+  cho mỗi chunk. Nên tắt khi ingest lần đầu số lượng lớn tài liệu.
+- GRAPH_ENABLED=false sẽ bỏ qua hoàn toàn Neo4j — RAG chỉ dùng Qdrant.
+- Kết nối Neo4j được tái sử dụng qua module-level driver singleton.
 """
 
 import logging
@@ -28,7 +68,7 @@ def _require_env(name: str) -> str:
     return value
 
 
-# ── Cấu hình ─────────────────────────────────────────────────────────────────
+# ── Cấu hình — đọc từ biến môi trường khi import ──────────────────────────────────────
 GRAPH_ENABLED: bool = os.environ.get("GRAPH_ENABLED", "true").lower() == "true"
 GRAPH_ENTITY_EXTRACTION: bool = os.environ.get(
     "GRAPH_ENTITY_EXTRACTION", "false").lower() == "true"
@@ -41,12 +81,15 @@ if GRAPH_ENABLED:
 else:
     NEO4J_URI = NEO4J_USERNAME = NEO4J_PASSWORD = ""
 
-# ── Driver singleton ─────────────────────────────────────────────────────────
+# ── Driver singleton — một kết nối Neo4j duy nhất cho toàn service ───────────────
 _driver: Driver | None = None
 
 
 def get_driver() -> Driver:
-    """Trả về singleton Neo4j Driver. Khởi tạo lần đầu và tái sử dụng sau."""
+    """Trả về singleton Neo4j Driver. Khởi tạo lần đầu, tái sử dụng cho mọi request sau.
+
+    Driver quản lý connection pool nội bộ — không cần tạo nhiều driver.
+    """
     global _driver
     if _driver is None:
         _driver = GraphDatabase.driver(
@@ -55,7 +98,11 @@ def get_driver() -> Driver:
 
 
 def ping() -> bool:
-    """Kiểm tra kết nối Neo4j. Trả về False thay vì raise exception."""
+    """Kiểm tra kết nối Neo4j bằng cách gọi verify_connectivity().
+
+    Trả về True nếu kết nối thành công, False nếu có ngoại lệ.
+    Không raise exception — được dùng trong /health endpoint.
+    """
     try:
         get_driver().verify_connectivity()
         return True

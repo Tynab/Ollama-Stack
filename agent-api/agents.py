@@ -1,51 +1,94 @@
 """
-agents.py — Cấu hình cho 15 agent SDLC trong LangGraph workflow.
+agents.py — Định nghĩa cấu hình 15 agent SDLC cho LangGraph workflow
+=====================================================================
 
-Định nghĩa pipeline 15 agent:
+Mô tả
+-----
+Module này là nguồn cấu hình duy nhất (single source of truth) cho toàn bộ
+pipeline SDLC. Mỗi agent được định nghĩa bằng AgentConfig gồm: step_id (thứ tự
+thực thi), role (định danh), name (tên hiển thị), model (LLM sử dụng),
+system_prompt (hướng dẫn chi tiết cho LLM), depends_on (danh sách role cần
+chạy trước) và rag_query_hint (gợi ý truy vấn RAG riêng để tăng độ chính xác
+retrieval).
 
-  Bước  Role           Model              Phụ thuộc
-  ----- -------------- ------------------ ----------------------------------
-   1    ba             BA_MODEL           --
-   2    pm             PM_MODEL           ba
-   3    sa             SA_MODEL           ba, pm
-   4    ta             TA_MODEL           ba, sa
-   5    designer       DESIGNER_MODEL     ba, sa, ta
-   6    tl             TL_MODEL           ba, sa, ta, designer
-   7    fe             FE_MODEL           ba, sa, ta, designer, tl
-   8    mobile         MOBILE_MODEL       ba, sa, ta, designer, tl
-   9    dba            DBA_MODEL          ba, sa, ta, tl
-  10    be             BE_MODEL           ba, sa, ta, fe, mobile, dba, tl
-  11    da             DA_MODEL           ba, sa, dba
-  12    tech_lead      TECH_LEAD_MODEL    sa, fe, mobile, be, dba
-  13    tester         TESTER_MODEL       be, fe, mobile, tech_lead, designer
-  14    devsecops      DEVSECOPS_MODEL    sa, ta, tech_lead, tester
-  15    clarifier      CLARIFIER_MODEL    ba, pm, sa, ta, designer, tl, fe, mobile, dba, be, da, tech_lead, tester, devsecops
+Thứ tự thực thi và phụ thuộc
+-----------------------------
+  Bước  Role          Model              Phụ thuộc
+  ----- ------------- ------------------ -----------------------------------------
+   1    ba            BA_MODEL           —  (không phụ thuộc)
+   2    pm            PM_MODEL           ba
+   3    sa            SA_MODEL           ba, pm
+   4    ta            TA_MODEL           ba, sa
+   5    designer      DESIGNER_MODEL     ba, sa, ta
+   6    tl            TL_MODEL           ba, sa, ta, designer
+   7    fe            FE_MODEL           ba, sa, ta, designer, tl
+   8    mobile        MOBILE_MODEL       ba, sa, ta, designer, tl
+   9    dba           DBA_MODEL          ba, sa, ta, tl
+  10    be            BE_MODEL           ba, sa, ta, fe, mobile, dba, tl
+  11    da            DA_MODEL           ba, sa, dba
+  12    tech_lead     TECH_LEAD_MODEL    sa, fe, mobile, be, dba
+  13    tester        TESTER_MODEL       be, fe, mobile, tech_lead, designer
+  14    devsecops     DEVSECOPS_MODEL    sa, ta, tech_lead, tester
+  15    clarifier     CLARIFIER_MODEL    ba, pm, sa, ta, designer, tl, fe, mobile,
+                                        dba, be, da, tech_lead, tester, devsecops
 
-Chọn model
-----------
-Model của từng role được đọc từ biến môi trường lúc import, cho phép
-thay đổi model chỉ cần sửa .env và restart container (không cần rebuild).
-Giá trị mặc định được dùng khi biến môi trường vắng mặt.
+Các nhóm agent theo chức năng
+------------------------------
+- Nhóm phân tích nghiệp vụ:  ba, pm, sa, ta, da
+  Sử dụng model reasoning mạnh (BA_MODEL, PM_MODEL, SA_MODEL, TA_MODEL, DA_MODEL).
+  Nhiệm vụ: phân tích yêu cầu, lập kế hoạch, thiết kế kiến trúc.
 
-Thêm role mới
--------------
-1. Thêm hằng số MODEL_XXX: MODEL_XXX = os.environ.get("XXX_MODEL", "<mặc định>")
-2. Thêm AgentConfig vào AGENTS với step_id, depends_on và system_prompt đúng.
-3. Chèn role vào WORKFLOW_STEPS đúng vị trí.
-4. Thêm XXX_MODEL vào .env và vào khối environment của agent-api trong docker-compose.yml.
+- Nhóm lập kế hoạch kỹ thuật: tl
+  Sử dụng TL_MODEL. Nhiệm vụ: chia nhỏ công việc thành task board cho FE/Mobile/BE/DBA.
+
+- Nhóm sinh code:  fe, mobile, be, dba, tech_lead, devsecops
+  Sử dụng coding model (FE_MODEL, MOBILE_MODEL, BE_MODEL, DBA_MODEL, TECH_LEAD_MODEL,
+  DEVSECOPS_MODEL). Chạy qua quy trình 2 pha: lập kế hoạch file → sinh từng file.
+  Mỗi agent kết thúc bằng Task Completion Checklist đối chiếu với TL task board.
+
+- Nhóm sáng tạo / kiểm thử:  designer, tester
+  Sử dụng DESIGNER_MODEL, TESTER_MODEL. Nhiệm vụ: thiết kế UI/UX và viết test.
+
+- Clarifier:  kiểm tra xuyên suốt toàn bộ 14 agent, phát hiện gap, mâu thuẫn,
+  assumption chưa được xác nhận. Kích hoạt Clarifier Regen Loop sau khi workflow
+  hoàn tất nếu §10 Recommended Re-generation List có nội dung.
+
+Quản lý model qua biến môi trường
+----------------------------------
+Mỗi hằng số MODEL_XXX được đọc từ biến môi trường tương ứng lúc import.
+Thay đổi model chỉ cần sửa .env rồi `docker compose restart agent-api`
+— không cần rebuild image. Giá trị mặc định được dùng khi env var vắng mặt.
+
+Hằng số xuất khẩu
+-----------------
+- AGENTS:         dict[str, AgentConfig] — tra cứu cấu hình theo role name
+- WORKFLOW_STEPS: list[str]             — thứ tự thực thi chuẩn của 15 role
+- MAX_PREV_OUTPUT_CHARS: int            — giới hạn ký tự mỗi dep output khi
+                                         xây dựng context (tránh overflow window)
+
+Hướng dẫn thêm role mới
+-----------------------
+1. Khai báo hằng model: MODEL_XXX = os.environ.get("XXX_MODEL", "<default>")
+2. Thêm AgentConfig vào AGENTS với step_id, role, name, model, depends_on,
+   rag_query_hint và system_prompt đầy đủ.
+3. Chèn role vào WORKFLOW_STEPS đúng vị trí theo thứ tự phụ thuộc.
+4. Thêm XXX_MODEL vào .env và vào khối environment của agent-api trong
+   docker-compose.yml.
 """
 
 import os
 from dataclasses import dataclass, field
 
-# ── Hằng số Model (lấy từ .env → khối environment trong docker-compose) ────
-# Agent suy luận
+# ── Hằng số Model — đọc từ biến môi trường tương ứng lúc import ──────────────
+# Nhóm agent phân tích nghiệp vụ: sử dụng model reasoning mạnh để phân tích
+# yêu cầu, thiết kế kiến trúc và lập kế hoạch dự án.
 MODEL_BA: str        = os.environ.get("BA_MODEL",        "qwen3.6:35b")
 MODEL_PM: str        = os.environ.get("PM_MODEL",        "qwen3.6:35b")
 MODEL_SA: str        = os.environ.get("SA_MODEL",        "qwen3.6:35b")
 MODEL_TA: str        = os.environ.get("TA_MODEL",        "qwen3.6:35b")
 MODEL_DA: str        = os.environ.get("DA_MODEL",        "qwen3.6:35b")
-# Agent lập trình
+# Nhóm agent sinh code: sử dụng coding model tối ưu cho việc viết code
+# và cấu hình hạ tầng.
 MODEL_FE: str           = os.environ.get("FE_MODEL",           "qwen3-coder-next")
 MODEL_MOBILE: str       = os.environ.get("MOBILE_MODEL",       "qwen3-coder-next")
 MODEL_BE: str           = os.environ.get("BE_MODEL",           "qwen3-coder-next")
@@ -53,12 +96,14 @@ MODEL_DBA: str          = os.environ.get("DBA_MODEL",          "qwen3-coder-next
 MODEL_TECH_LEAD: str    = os.environ.get("TECH_LEAD_MODEL",    "qwen3-coder-next")
 MODEL_DEVSECOPS: str    = os.environ.get("DEVSECOPS_MODEL",    "qwen3-coder-next")
 MODEL_TL: str           = os.environ.get("TL_MODEL",           "qwen3-coder-next")
-# Agent sáng tạo / kiểm thử
+# Nhóm agent sáng tạo và kiểm thử: Designer dùng model sáng tạo mạnh
+# cho thiết kế UI/UX; Tester dùng model cân bằng giữa logic và ngôn ngữ tự nhiên.
 MODEL_TESTER: str    = os.environ.get("TESTER_MODEL",    "mistral-small3.2:24b")
 MODEL_DESIGNER: str  = os.environ.get("DESIGNER_MODEL",  "gemma4:31b")
-# Clarifier — suy luận mạnh để phát hiện gap & assumption xuyên suốt toàn pipeline
+# Clarifier — agent kiểm tra toàn bộ pipeline, cần model reasoning mạnh nhất
+# để phát hiện gap, mâu thuẫn và assumption ẩn xuyên suốt 14 agent trước.
+# LƯU Ý: EMBEDDING_MODEL được định nghĩa và dùng riêng trong rag-api/ingest.py.
 MODEL_CLARIFIER: str = os.environ.get("CLARIFIER_MODEL", "qwen3.6:35b")
-# LƯU Ý: MODEL_EMBEDDING được định nghĩa trong rag-api/ingest.py, không dùng trong agent-api.
 
 
 @dataclass
@@ -68,10 +113,11 @@ class AgentConfig:
     name: str
     model: str
     system_prompt: str
-    # Output của các bước trước cần chèn làm context (theo thứ tự phụ thuộc)
+    # Danh sách role phải chạy xong trước — output của chúng sẽ được rút gọn
+    # và chèn vào context trước khi gọi LLM của agent này.
     depends_on: list[str] = field(default_factory=list)
-    # Gợi ý truy vấn RAG riêng cho từng role (cải thiện độ chính xác retrieval)
-    rag_query_hint: str = ""
+    # Chuỗi gợi ý truy vấn RAG riêng cho từng role. Thay vì dùng nguyên user_input,
+    # rag-api sẽ nhận chuỗi này để lấy context chính xác hơn cho từng vai trò SDLC.
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -480,6 +526,13 @@ Structure your output with these sections:
 10. Accessibility Checklist (ARIA roles, keyboard navigation, color contrast, screen reader support)
 11. FE Task Breakdown — REQUIRED before any code skeleton (table format: | # | Task | Category: Setup/Routing/Component/API Integration/Third-party/Testing | Estimate (days) | Priority: High/Med/Low | Depends On | Notes |; categories in this order: Setup → Routing → Core Components → Internal API Integration → Third-party Integration → Testing)
 12. FE Code Skeleton (key pages and components with TypeScript structure stubs)
+
+13. Task Completion Checklist (MANDATORY FINAL SECTION)
+   Produce a "## Task Completion Checklist" section as the very last item in your output.
+   List EVERY task from the TL Agent's §4 FE Task Board. For each task, mark:
+   - ✅ Done — [Task name] → [section number or file where it was addressed]
+   - ⏳ Pending — [Task name] → [reason or dependency blocking it]
+   No task from the TL FE Task Board may be silently skipped. Every task must appear in this checklist.
 """,
     ),
 
@@ -527,6 +580,13 @@ Structure your output with these sections:
 12. Loading / Empty / Error States (per screen: skeleton, spinner, empty illustration + CTA, error + retry)
 13. Mobile Task Breakdown — REQUIRED before any code skeleton (table format: | # | Task | Category: Setup/Navigation/Screen/API Integration/Third-party SDK/Offline/Testing | Estimate (days) | Priority: High/Med/Low | Depends On | Notes |; categories in this order: Setup → Navigation → Core Screens → Internal API → Third-party SDKs → Offline/Cache → Testing)
 14. Mobile Code Skeleton (key screens and widgets with Dart/TypeScript structure stubs)
+
+15. Task Completion Checklist (MANDATORY FINAL SECTION)
+   Produce a "## Task Completion Checklist" section as the very last item in your output.
+   List EVERY task from the TL Agent's §5 Mobile Task Board. For each task, mark:
+   - ✅ Done — [Task name] → [section number or file where it was addressed]
+   - ⏳ Pending — [Task name] → [reason or dependency blocking it]
+   No task from the TL Mobile Task Board may be silently skipped. Every task must appear in this checklist.
 """,
     ),
 
@@ -574,6 +634,13 @@ Structure your output with these sections:
 11. Data Flow Map
    ASCII diagram or table: | Table/Collection | Written By (service + triggering action) | Write Frequency | Read By (service + query context) | Read Frequency | Data Crosses Service Boundary Via: API/event/queue/direct | Exclusive Owner | Notes |
    Goal: show which services produce vs consume each dataset, surface cross-service data dependencies and shared-mutable-state coupling, and identify tables that are read by services that do not own them (potential consistency and coupling risk).
+
+12. Task Completion Checklist (MANDATORY FINAL SECTION)
+   Produce a "## Task Completion Checklist" section as the very last item in your output.
+   List EVERY task from the TL Agent's §7 DBA Task Board. For each task, mark:
+   - ✅ Done — [Task name] → [section number or file where it was addressed]
+   - ⏳ Pending — [Task name] → [reason or dependency blocking it]
+   No task from the TL DBA Task Board may be silently skipped. Every task must appear in this checklist.
 """,
     ),
 
@@ -631,6 +698,13 @@ Structure your output with these sections:
       (1) Auth/authorization flow: HTTP request → auth middleware → token validation → service → repository → DB response → client. Show the token/claims payload at each step.
       (2) Core business transaction: HTTP request → input validation → service logic → DB write → event publish → external notification → client response. Show request/response shape at each step.
       (3) External service integration: BE → external API call (with auth header/payload) → success/failure response handling → DB update → event or client response.
+
+13. Task Completion Checklist (MANDATORY FINAL SECTION)
+   Produce a "## Task Completion Checklist" section as the very last item in your output.
+   List EVERY task from the TL Agent's §6 BE Task Board. For each task, mark:
+   - ✅ Done — [Task name] → [section number or file where it was addressed]
+   - ⏳ Pending — [Task name] → [reason or dependency blocking it]
+   No task from the TL BE Task Board may be silently skipped. Every task must appear in this checklist.
 """,
     ),
 

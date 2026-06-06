@@ -1,31 +1,85 @@
 """
-ingest.py — Pipeline nạp tài liệu vào Qdrant và Neo4j cho YAN RAG stack.
+ingest.py — Pipeline nạp tài liệu vào Qdrant và Neo4j cho YAN RAG stack
+=========================================================================
 
-Quy trình xử lý
------------------
-  load_documents() [song song, ThreadPoolExecutor]
-  →  split_documents()
-  →  _run_async_pipeline() [asyncio + httpx trực tiếp đến Ollama /api/embed]
-       • asyncio.gather: toàn bộ batch submit đồng thời
-       • Semaphore giới hạn request đồng thời = INGEST_EMBED_WORKERS
-       • AsyncQdrantClient: upsert không blocking
-  →  save_graph (Neo4j, tùy chọn)
+Mô tả
+-----
+Module xử lý toàn bộ quy trình ingest: tải tài liệu từ disk, chia thành
+các chunk nhỏ, embed bằng Ollama, upsert vào Qdrant và tùy chọn lưu đồ thị
+quan hệ vào Neo4j.
+
+Quy trình xử lý chi tiết
+-------------------------
+    load_documents()
+        Tải tất cả file trong thư mục project song song bằng ThreadPoolExecutor.
+        Hỗ trợ các định dạng: .md .txt .pdf .docx .csv .json .jsonl .yaml .yml
+        .xml .html .py .js .ts .go .rs .java .cs .sh .sql .log
+
+    split_documents()
+        Chia tài liệu thành chunk bằng RecursiveCharacterTextSplitter.
+        Kích thước chunk và overlap lấy từ biến môi trường CHUNK_SIZE và
+        CHUNK_OVERLAP. Mỗi chunk giữ lại metadata nguồn.
+
+    _run_async_pipeline()
+        Pipeline bất đồng bộ sử dụng asyncio + httpx gọi trực tiếp đến
+        Ollama endpoint /api/embed (không qua LangChain để tối đa hiệu suất).
+        - asyncio.gather(): toàn bộ batch embed được submit đồng thời
+        - asyncio.Semaphore(INGEST_EMBED_WORKERS): giới hạn số request embed
+          đồng thời, tránh làm quá tải GPU/CPU
+        - AsyncQdrantClient: upsert vector không blocking
+        Sau mỗi batch embed+upsert, kết quả được ghi vào Qdrant theo batch
+        kích thước UPSERT_BATCH_SIZE.
+
+    save_graph() (tùy chọn, khi GRAPH_ENABLED=true)
+        Ánh xạ mỗi chunk vào Neo4j theo mô hình:
+        (:Project)-[:HAS_DOCUMENT]->(:Document)-[:HAS_CHUNK]->(:Chunk)
+        Nếu GRAPH_ENTITY_EXTRACTION=true, LLM trích xuất thực thể từ nội dung
+        chunk và lưu quan hệ (:Chunk)-[:MENTIONS]->(:Entity) và
+        (:Entity)-[:CO_OCCURS_WITH]->(:Entity).
 
 Idempotency
 -----------
-  make_point_id() sinh UUID5 tất định từ path + content hash.
-  Chạy /ingest nhiều lần trên cùng file sẽ upsert đúng point_id — không tạo bản sao.
+make_point_id() sinh UUID5 tất định từ tổ hợp (đường dẫn file + hash nội dung).
+Chạy /ingest nhiều lần trên cùng một file sẽ upsert đúng point_id đã tồn tại
+— Qdrant tự cập nhật payload, không tạo bản ghi trùng lặp.
 
-Metadata chunk
---------------
-  Mỗi chunk Qdrant có payload: source_file, relative_path, file_type,
-  chunk_index, content_hash, embedding_model, module, doc_type, chunk_type,
-  language, status, created_at, page_content, project.
+Metadata của mỗi chunk trong Qdrant
+------------------------------------
+Mỗi PointStruct có payload đầy đủ:
+    source_file     — tên file gốc
+    relative_path   — đường dẫn tương đối trong data/raw/
+    file_type       — phần mở rộng (md, pdf, py ...)
+    chunk_index     — số thứ tự chunk trong file
+    content_hash    — MD5 hash nội dung chunk (dùng cho idempotency)
+    embedding_model — tên model embedding đã dùng
+    module          — tên thư mục con (dùng để filter theo module trong /ask)
+    doc_type        — loại tài liệu: prd, schema, api, architecture, spec, other
+    chunk_type      — loại nội dung: paragraph, table, code, heading
+    language        — ngôn ngữ lập trình nếu là code chunk
+    status          — trạng thái: active
+    created_at      — timestamp ISO 8601 lúc ingest
+    page_content    — nội dung văn bản đầy đủ của chunk
+    project         — tên project
 
-Graph enrichment (tùy chọn)
+Suy luận module từ cấu trúc thư mục
+-------------------------------------
+    data/raw/{project}/{module}/file.md  →  chunk.module = tên thư mục con
+    data/raw/{project}/file.md           →  chunk.module = project
+Module được dùng bởi POST /ask với tham số module= để lọc kết quả search.
+
+Các biến môi trường sử dụng
 ----------------------------
-  Nếu GRAPH_ENABLED=true, mỗi chunk được ánh xạ vào Neo4j.
-  Nếu GRAPH_ENTITY_EXTRACTION=true, LLM sẽ trích xuất thực thể và lưu quan hệ MENTIONS.
+    EMBEDDING_MODEL       — tên model Ollama để embed
+    OLLAMA_BASE_URL       — URL Ollama server
+    QDRANT_URL            — URL Qdrant server
+    COLLECTION_NAME       — tiền tố tên collection
+    CHUNK_SIZE            — kích thước chunk (ký tự)
+    CHUNK_OVERLAP         — overlap giữa chunk kề nhau (ký tự)
+    UPSERT_BATCH_SIZE     — số vector upsert vào Qdrant mỗi batch
+    INGEST_EMBED_WORKERS  — số request embed asyncio đồng thời
+    GRAPH_ENABLED         — true/false bật Neo4j
+    GRAPH_ENTITY_EXTRACTION — true/false bật LLM entity extraction
+    NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD / NEO4J_DATABASE
 """
 
 import asyncio
@@ -74,8 +128,9 @@ EMBEDDING_MODEL = _require_env("EMBEDDING_MODEL")
 CHUNK_SIZE = int(_require_env("CHUNK_SIZE"))
 CHUNK_OVERLAP = int(_require_env("CHUNK_OVERLAP"))
 UPSERT_BATCH_SIZE = int(_require_env("UPSERT_BATCH_SIZE"))
-# Số batch embed/upsert chạy đồng thời trong async pipeline.
-# Nên điều chỉnh theo tài nguyên thực tế; mặc định 1 để ưu tiên ổn định.
+# Số batch embed/upsert chạy đồng thời trong asyncio pipeline.
+# Giá trị này cân bằng giữa hiệu suất và ổn định GPU — tăng khi có nhiều
+# GPU/CPU sẵn có và OLLAMA_NUM_PARALLEL lớn.
 INGEST_EMBED_WORKERS: int = max(1, int(os.environ.get("INGEST_EMBED_WORKERS", "1")))
 
 GRAPH_ENABLED: bool = os.environ.get("GRAPH_ENABLED", "true").lower() == "true"
@@ -94,12 +149,20 @@ if GRAPH_ENABLED:
 
 
 def get_collection_name(project: str) -> str:
-    """Tạo tên Qdrant collection: {COLLECTION_NAME}__{project}."""
+    """Tạo tên Qdrant collection theo quy ước {COLLECTION_NAME}__{project}.
+
+    Dùng hai dấu gạch dưới __ làm separator để tránh nhầm lẫn với dấu gạch
+    trong tên project (ví dụ: "yan_raw_docs__my-project").
+    """
     return f"{COLLECTION_NAME}__{project}"
 
 
 def get_projects(raw_data_dir: str = RAW_DATA_DIR) -> list[str]:
-    """Trả về danh sách tên project đã sắp xếp (thư mục con cấp một trong raw_data_dir)."""
+    """Trả về danh sách tên project đã sắp xếp — là các thư mục con cấp 1 trong raw_data_dir.
+
+    Mỗi thư mục con tương ứng một project độc lập với collection Qdrant riêng.
+    Trả về [] nếu raw_data_dir không tồn tại.
+    """
     root = Path(raw_data_dir)
     if not root.exists():
         return []

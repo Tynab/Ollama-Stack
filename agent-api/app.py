@@ -1,37 +1,90 @@
 """
-app.py — YAN SDLC Agent Orchestrator API  (cổng 8091)
+app.py — YAN SDLC Agent Orchestrator API (cổng 8091)
+=====================================================
 
-Endpoints
----------
-GET  /health                                       Thông tin service: Ollama URL, RAG URL, số agent.
-GET  /agents                                       Liệt kê cấu hình tất cả agent (step, model, depends_on).
-GET  /ui                                           Giao diện Workflow UI (single-page app).
-POST /agent/{role}                                 Gọi đồng bộ một bước agent đơn lẻ.
-                                                   Body: AgentStepRequest  →  AgentStepResponse
-POST /workflow/run                                 Gửi workflow SDLC 15 agents để chạy nền.
-                                                   Body: WorkflowRunRequest  →  {workflow_id, status}
-GET  /workflow/{workflow_id}                       Kiểm tra trạng thái hoặc lấy kết quả đã hoàn thành.
-                                                   Response: WorkflowRecord
-GET  /workflows                                    Liệt kê workflow gần đây (mới nhất trước, tối đa 50).
-GET  /workflow/{workflow_id}/artifacts             Liệt kê các artifact file đã lưu (metadata, không bao gồm nội dung).
-GET  /workflow/{workflow_id}/artifacts/{role}/{path}  Đọc nội dung một file artifact;
-                                                      thêm ?download=1 để tải xuống dưới dạng binary.
+Mô tả
+-----
+FastAPI application điều phối toàn bộ quy trình SDLC 15 bước thông qua LangGraph.
+Mỗi bước là một AI agent độc lập với model, system prompt và dependency riêng biệt.
+Workflow chạy bất đồng bộ (BackgroundTasks) và cập nhật trạng thái real-time.
+
+Danh sách endpoint
+------------------
+GET  /health
+    Trả về trạng thái hoạt động của service, URL Ollama, URL RAG và số lượng agent.
+    Dùng bởi Docker healthcheck và giám sát bên ngoài.
+
+GET  /agents
+    Liệt kê cấu hình đầy đủ của 15 agent: step_id, name, model, depends_on.
+
+GET  /ui
+    Phục vụ giao diện web SDLC Workflow (file static/workflow.html).
+
+POST /agent/{role}
+    Chạy đồng bộ một agent đơn lẻ theo role chỉ định.
+    Nhận AgentStepRequest (user_input, project, prev_outputs, tech_stack, rag_enabled, rag_top_k).
+    Trả về AgentStepResponse (role, name, model, output).
+    Hữu ích để test từng agent riêng lẻ hoặc ghép pipeline thủ công.
+
+POST /workflow/run
+    Xếp hàng workflow SDLC 15 bước chạy nền, trả về workflow_id ngay lập tức.
+    Nhận WorkflowRunRequest (user_input, project, rag_enabled, rag_top_k, tech_stack).
+    Trạng thái chuyển đổi: pending → running → completed | failed.
+
+GET  /workflow/{workflow_id}
+    Kiểm tra trạng thái hoặc lấy toàn bộ kết quả workflow đã hoàn thành.
+    Trả về WorkflowRecord bao gồm step_outputs, completed_steps, artifacts, error.
+
+GET  /workflows
+    Liệt kê tối đa 50 workflow gần nhất, sắp xếp theo thời gian tạo mới nhất trước.
+
+GET  /workflow/{workflow_id}/artifacts
+    Liệt kê metadata của tất cả file artifact đã được trích xuất và lưu vào disk.
+    Không trả về nội dung file — dùng endpoint bên dưới để đọc từng file.
+
+GET  /workflow/{workflow_id}/artifacts/{role}/{path}
+    Đọc nội dung một file artifact cụ thể dưới dạng text.
+    Thêm query param ?download=1 để tải xuống dưới dạng binary.
 
 Vòng đời workflow
 -----------------
-  POST /workflow/run  →  status=pending  (record lưu, BG task xếp hàng)
-     └─> nền          →  status=running  (LangGraph invoke bắt đầu)
-           └─> xong   →  status=completed | failed
+    POST /workflow/run
+        → WorkflowRecord tạo với status=pending, lưu vào workflow_store
+        → BackgroundTasks.add_task(_run_workflow_task)
+            → status=running, LangGraph StateGraph.stream() bắt đầu
+            → Mỗi node hoàn thành: cập nhật step_outputs, completed_steps, artifacts
+            → Sau node cuối cùng (clarifier): chạy Clarifier Regen Loop nếu được bật
+            → status=completed (hoặc failed nếu có lỗi không xử lý được)
 
-Ghi chú Concurrency
--------------------
-- _store_lock bảo vệ workflow_store khỏi đọc/ghi đồng thời.
-- get_workflow() dùng double-checked locking để đồ thị chỉ được biên dịch
-  một lần dù nhiều request đến lúc khởi động.
-- FastAPI BackgroundTasks chạy workflow trong thread-pool thread;
-  _run_workflow_task cập nhật WorkflowRecord trực tiếp (không cần re-insert
-  vì dict là kiểu tham chiếu).
-- Artifact extraction chạy ngay sau mỗi node hoàn thành (non-fatal: lỗi không dừng workflow).
+Clarifier Regen Loop
+--------------------
+Sau khi workflow hoàn tất thành công, _run_workflow_task phân tích §10 của
+Clarifier output để tìm danh sách agent cần re-generate. Với mỗi vòng lặp
+(tối đa CLARIFIER_REGEN_LOOPS lần):
+    1. Re-run từng agent trong danh sách theo thứ tự WORKFLOW_STEPS
+    2. Re-run Clarifier với outputs đã cập nhật
+    3. Kiểm tra lại §10 — nếu rỗng thì dừng sớm
+
+Concurrency và thread-safety
+-----------------------------
+- workflow_store là dict in-memory, được bảo vệ bởi _store_lock (threading.Lock)
+  cho mọi thao tác đọc/ghi để tránh race condition.
+- get_workflow() dùng double-checked locking: kiểm tra trước lock, kiểm tra lại
+  sau lock, đảm bảo LangGraph StateGraph chỉ được compile đúng một lần dù
+  nhiều request đến đồng thời lúc khởi động.
+- _run_workflow_task chạy trong thread-pool của FastAPI BackgroundTasks.
+  WorkflowRecord được cập nhật trực tiếp (pass-by-reference) — không cần re-insert.
+- Artifact extraction chạy ngay sau mỗi node hoàn thành (non-fatal: exception
+  trong extraction chỉ ghi warning log, không dừng workflow).
+
+Bộ nhớ và giới hạn
+------------------
+- Tối đa _MAX_STORED_WORKFLOWS (50) workflow trong bộ nhớ. Entry cũ nhất bị xóa
+  khi đạt giới hạn.
+- user_input được sanitize tại boundary: loại bỏ ký tự điều khiển, cắt tại
+  _MAX_INPUT_CHARS (10.000) ký tự.
+- Mỗi workflow run được ghi vào data/memory/episodic/workflow_runs.jsonl để
+  làm seed dữ liệu lịch sử (episodic memory).
 """
 
 import json
@@ -58,11 +111,16 @@ from workflow import (
     SDLCState,
     get_workflow,
     run_single_step,
+    _parse_clarifier_regen_list,
 )
 
 
 def _require_env(name: str) -> str:
-    """Trả về giá trị biến môi trường *name*, raise RuntimeError nếu không tồn tại."""
+    """Trả về giá trị biến môi trường *name*.
+
+    Raise RuntimeError nếu biến không tồn tại — đảm bảo service không khởi động
+    thiếu cấu hình bắt buộc. Các biến tùy chọn nên dùng os.environ.get() trực tiếp.
+    """
     value = os.environ.get(name)
     if value is None:
         raise RuntimeError(
@@ -84,7 +142,7 @@ app = FastAPI(title="YAN SDLC Agent Orchestrator", version="1.0.0")
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
-# ── Mô hình Request / Response ─────────────────────────────────────────────
+# ── Models Pydantic cho Request và Response của các endpoint ────────────────────────────────────────
 
 class AgentStepRequest(BaseModel):
     user_input: str = Field(..., min_length=1,
@@ -149,26 +207,33 @@ class WorkflowRecord(BaseModel):
     completed_at: str | None = None
 
 
-# ── Lưu trữ workflow trong bộ nhớ (khóa theo workflow_id) ──────────────────────
-# Dùng cho local stack; môi trường production nên dùng Redis hoặc database.
-# _store_lock đồng bộ hóa mọi thao tác đọc/ghi để tránh race condition.
+# ── In-memory workflow store — đồng bộ hóa bằng _store_lock ───────────────────
+# workflow_store lưu kết quả của tất cả workflow trong RAM. Giới hạn
+# _MAX_STORED_WORKFLOWS entry — entry cũ nhất bị xóa khi đạt giới hạn.
+# Môi trường production cần Redis hoặc database để persistence.
 
 workflow_store: dict[str, WorkflowRecord] = {}
 _store_lock = threading.Lock()
 
-_MAX_STORED_WORKFLOWS = 50  # xóa entry cũ nhất khi đạt giới hạn
+_MAX_STORED_WORKFLOWS = 50
+# Số vòng lặp Clarifier re-generation tối đa. 0 = tắt toàn bộ tính năng.
+# Tăng lên 2 nếu muốn nhiều vòng tinh chỉnh hơn (tốn thêm thời gian).
+_CLARIFIER_REGEN_LOOPS: int = int(os.environ.get("CLARIFIER_REGEN_LOOPS", "1"))
 
-# ── Tài nguyên bộ nhớ sự kiện ────────────────────────────────────────────────────
+# ── Đường dẫn bộ nhớ episodic và giới hạn input ────────────────────────────
 
 MEMORY_DIR: str = os.environ.get("MEMORY_DIR", "/data/memory")
-_MAX_INPUT_CHARS: int = 10_000  # Giới hạn input để phòng context overflow
+_MAX_INPUT_CHARS: int = 10_000  # Giới hạn 10.000 ký tự để phòng chống context overflow và DoS.
 
 
 def _sanitize_input(text: str) -> str:
-    """
-    Kiểm tra và làm sạch input người dùng tại system boundary.
-    Loại bỏ ký tự điều khiển (ngoại trừ newline/tab) và cắt ngắn nếu quá dài.
-    Theo nguyên tắc SecOps: validate input trước khi đưa vào LLM context.
+    """Sanitize input người dùng tại system boundary trước khi đưa vào LLM context.
+
+    Hai bước xử lý:
+    1. Loại bỏ ký tự điều khiển (control characters) ngoại trừ newline, carriage return
+       và tab — ngăn chặn injection qua ANSI escape hay null bytes.
+    2. Cắt ngắn tại _MAX_INPUT_CHARS (10.000) nếu input vượt quá — tránh overflow
+       context window của model và chống DoS qua input khổng lồ.
     """
     sanitized = "".join(ch for ch in text if ch >= " " or ch in "\n\r\t")
     if len(sanitized) > _MAX_INPUT_CHARS:
@@ -188,9 +253,11 @@ def _log_workflow_run(
     error: str | None,
     duration_seconds: float,
 ) -> None:
-    """
-    Ghi thông tin workflow run ra file JSONL làm seed dữ liệu episodic memory.
-    Non-fatal: lỗi ghi file không làm gián đoạn workflow.
+    """Ghi thông tin workflow run ra file JSONL để làm dữ liệu lịch sử (episodic memory).
+
+    Mỗi dòng JSONL lưu: workflow_id, project, user_input (500 ký tự đầu),
+    danh sách bước đã chạy, số bước, trạng thái, lỗi, thời gian chạy và timestamp.
+    Non-fatal: lỗi ghi file chỉ ghi warning log, không làm gán đoạn workflow.
     """
     try:
         log_dir = Path(MEMORY_DIR) / "episodic"
@@ -215,7 +282,10 @@ def _log_workflow_run(
 
 
 def _store_workflow(record: WorkflowRecord) -> None:
-    """Lưu *record* vào store, xóa entry cũ nhất khi store đầy."""
+    """Lưu *record* vào workflow_store, tự động xóa entry cũ nhất khi store đạt giới hạn.
+
+    Thread-safe: dùng _store_lock để đồng bộ hóa ghi vào dict in-memory.
+    """
     with _store_lock:
         if len(workflow_store) >= _MAX_STORED_WORKFLOWS:
             oldest_key = next(iter(workflow_store))
@@ -223,16 +293,18 @@ def _store_workflow(record: WorkflowRecord) -> None:
         workflow_store[record.workflow_id] = record
 
 
-# ── Chạy workflow nền ───────────────────────────────────────────────────────────────
+# ── Task nền chạy toàn bộ SDLC workflow ────────────────────────────────────────────────────
 
 def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
-    """
-    Task nền: chạy toàn bộ SDLC LangGraph workflow và cập nhật
-    WorkflowRecord trực tiếp. Được gọi bởi FastAPI BackgroundTasks.
+    """Task nền thực thi toàn bộ SDLC LangGraph workflow và cập nhật WorkflowRecord.
 
-    Việc cập nhật *record* an toàn vì:
-    - Chỉ có duy nhất một background task cho mỗi workflow_id.
-    - Các endpoint đọc chỉ đọc các trường được gán nguyên tử (status, timestamps).
+    Được gọi bởi FastAPI BackgroundTasks — chạy trong thread-pool thread riêng biệt.
+
+    Thread-safety:
+    - Chỉ một background task tồn tại cho mỗi workflow_id.
+    - WorkflowRecord được cập nhật trực tiếp (pass-by-reference) vì dict
+      là kiểu tham chiếu — không cần re-insert vào store.
+    - Các endpoint đọc (GET /workflow/{id}) chỉ đọc các trường được ghi nguyên tử.
     """
     record = workflow_store.get(workflow_id)
     if record is None:
@@ -241,7 +313,8 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
     record.status = WorkflowStatus.running
     logger.info("Workflow %s started", workflow_id)
 
-    # user_input đã được sanitize khi enqueue — dùng lại từ record để tránh xử lý hai lần.
+    # user_input đã được sanitize lúc enqueue và lưu vào record — tái sử dụng trực tiếp
+    # thay vì sanitize lại từ req.user_input để đảm bảo nhất quán.
     sanitized_input = record.user_input
 
     initial_state: SDLCState = {
@@ -261,13 +334,16 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
     try:
         final_state: SDLCState = {}  # type: ignore[assignment]
         for chunk in get_workflow().stream(initial_state, stream_mode="updates"):
-            # chunk = {node_name: partial_state_dict}  (stream_mode="updates")
+            # chunk = {ten_node: partial_state_dict} với stream_mode="updates".
+            # Mỗi chunk cập nhật được ngay lập tức vào record để GET /workflow/{id}
+            # phản ánh tiến trình real-time.
             for node_output in chunk.values():
                 if isinstance(node_output, dict):
                     # Cập nhật real-time để GET /workflow/{id} phản ánh tiến trình
                     if "step_outputs" in node_output:
                         record.step_outputs.update(node_output["step_outputs"])
-                        # Trích xuất artifact cho các role có file code (non-fatal)
+                        # Trích xuất và lưu artifact ngay sau khi mỗi coding node hoàn thành.
+                        # Non-fatal: lỗi extraction chỉ ghi log, không dừng workflow.
                         for _role, _out in node_output["step_outputs"].items():
                             if (
                                 _role in _ARTIFACT_ROLES
@@ -287,6 +363,94 @@ def _run_workflow_task(workflow_id: str, req: WorkflowRunRequest) -> None:
                         record.error = node_output["error"]
                     final_state.update(node_output)
         record.status = WorkflowStatus.failed if record.error else WorkflowStatus.completed
+
+        # ── Clarifier Regen Loop ───────────────────────────────────────────────────────────────────
+        # Chỉ chạy khi workflow hoàn thành thành công và CLARIFIER_REGEN_LOOPS > 0.
+        # Clarifier phân tích §10 để lấy danh sách agent cần re-gen, re-run từng agent,
+        # sau đó re-run Clarifier để đánh giá lại — lặp tối đa CLARIFIER_REGEN_LOOPS lần.
+        if record.status == WorkflowStatus.completed and _CLARIFIER_REGEN_LOOPS > 0:
+            _live_outputs: dict[str, str] = dict(record.step_outputs)
+            for _loop_idx in range(_CLARIFIER_REGEN_LOOPS):
+                regen_roles = _parse_clarifier_regen_list(
+                    _live_outputs.get("clarifier", "")
+                )
+                if not regen_roles:
+                    logger.info(
+                        "Clarifier regen loop %d/%d: không có agent nào cần re-gen — dừng.",
+                        _loop_idx + 1, _CLARIFIER_REGEN_LOOPS,
+                    )
+                    break
+
+                logger.info(
+                    "Clarifier regen loop %d/%d: re-generating roles=%s",
+                    _loop_idx + 1, _CLARIFIER_REGEN_LOOPS, regen_roles,
+                )
+                record.status = WorkflowStatus.running
+
+                # Re-run từng agent được đề xuất theo thứ tự WORKFLOW_STEPS (dependency order).
+                for _role in regen_roles:
+                    try:
+                        _new_output = run_single_step(
+                            role=_role,
+                            user_input=sanitized_input,
+                            project=req.project,
+                            prev_outputs=_live_outputs,
+                            tech_stack=req.tech_stack,
+                            rag_enabled=req.rag_enabled,
+                            rag_top_k=req.rag_top_k,
+                            ollama_base_url=OLLAMA_BASE_URL,
+                            rag_api_url=RAG_API_URL,
+                        )
+                        _live_outputs[_role] = _new_output
+                        record.step_outputs[_role] = _new_output
+                        # Re-extract artifact nếu role này có file code — cập nhật artifacts sau re-gen.
+                        if (
+                            _role in _ARTIFACT_ROLES
+                            and _new_output
+                            and not _new_output.startswith("[LỖI")
+                        ):
+                            _arts = _extract_artifacts(_role, _new_output, workflow_id)
+                            if _arts:
+                                record.artifacts[_role] = _arts
+                        logger.info(
+                            "Clarifier regen loop %d: %s re-generated (%d chars)",
+                            _loop_idx + 1, _role, len(_new_output),
+                        )
+                    except Exception as _regen_exc:
+                        logger.warning(
+                            "Clarifier regen loop %d: re-gen '%s' thất bại (non-fatal): %s",
+                            _loop_idx + 1, _role, _regen_exc,
+                        )
+
+                # Re-run clarifier với outputs đã cập nhật
+                try:
+                    _new_clarifier = run_single_step(
+                        role="clarifier",
+                        user_input=sanitized_input,
+                        project=req.project,
+                        prev_outputs=_live_outputs,
+                        tech_stack=req.tech_stack,
+                        rag_enabled=req.rag_enabled,
+                        rag_top_k=req.rag_top_k,
+                        ollama_base_url=OLLAMA_BASE_URL,
+                        rag_api_url=RAG_API_URL,
+                    )
+                    _live_outputs["clarifier"] = _new_clarifier
+                    record.step_outputs["clarifier"] = _new_clarifier
+                    logger.info(
+                        "Clarifier regen loop %d: clarifier re-run xong (%d chars)",
+                        _loop_idx + 1, len(_new_clarifier),
+                    )
+                except Exception as _clarifier_exc:
+                    logger.warning(
+                        "Clarifier regen loop %d: clarifier re-run thất bại: %s — dừng loop.",
+                        _loop_idx + 1, _clarifier_exc,
+                    )
+                    break
+
+            record.status = WorkflowStatus.failed if record.error else WorkflowStatus.completed
+        # ── Kết thúc Clarifier Regen Loop ─────────────────────────────────────────
+
     except Exception as exc:
         logger.exception("Workflow %s thất bại", workflow_id)
         record.status = WorkflowStatus.failed
