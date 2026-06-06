@@ -29,6 +29,7 @@ Concurrency
   dù nhiều request đến đồng thời.
 """
 
+import functools
 import json as _json
 import logging
 import os
@@ -87,6 +88,7 @@ Critical rules — apply to every response:
 12. CROSS-AGENT CITATIONS: Whenever a decision, design choice, or data element traces back to a prior agent's output, cite it explicitly using the format "Agent §Section" (e.g., "per BA §3 FR-01", "per SA §3 /api/auth/login", "per TL §4 FE Task #3", "per Designer §5 Screen S-02"). Do NOT silently consume upstream information without citation.
 13. INTRA-DOCUMENT LINKAGE: For every section in your output, add a brief note stating which other sections within this document it connects to, using "→ see §N" notation (e.g., "→ see §5 API Integration Map", "→ see §3 Component Breakdown"). This makes the dependency graph within your output explicit.
 14. DEPTH OVER SUMMARY: Every section must contain complete, actionable, implementation-ready detail — not a summary or placeholder. Tables must have real data rows derived from the provided context. Bullet points must be specific (names, values, IDs), not generic descriptions. If you find yourself writing a generic statement like "handle errors appropriately", replace it with the exact error codes, HTTP statuses, and recovery actions required.
+15. PLATFORM CONVENTIONS ARE BINDING: If the RAG Knowledge Base Context contains project-specific coding conventions, library names, naming rules, architectural patterns (e.g. three-seam pattern, scope=platform rows, Module Federation topology, tenantId-first index invariant), platform-provided shared modules (common-lib, guard decorators, base repositories), or Kafka topic names — treat ALL of these as HARD CONSTRAINTS that OVERRIDE generic best practices. Do not invent a new abstraction when the platform already provides one. Do not use a generic library when the platform mandates a specific one. Do not invent service names, Kafka topic names, route prefixes, port numbers, or decorator names — use only what the RAG context documents. If RAG documents a naming invariant (e.g. "tenantId is field #1 in every compound index"), apply it everywhere without exception.
 """
 
 
@@ -149,7 +151,7 @@ _REASONING_MODELS: frozenset[str] = frozenset({"phi4-mini-reasoning", "phi4-reas
 
 
 def _strip_thinking(text: str) -> str:
-    """Remove <think>...</think> blocks emitted by reasoning models."""
+    """Xóa các block <think>...</think> mà reasoning model phát ra, trả về phần nội dung thực sự."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
     return text.strip()
 
@@ -215,7 +217,7 @@ Strict rules:
 
 
 def _detect_db_type(tech_stack: list[str] | None) -> str:
-    """Detect DB paradigm. Returns 'nosql', 'sql', 'both', or 'unknown'."""
+    """Nhận diện loại DB từ tech_stack. Trả về 'nosql', 'sql', 'both', hoặc 'unknown'."""
     if not tech_stack:
         return "unknown"
     _nosql_kw = {"mongodb", "mongo", "nosql", "dynamodb", "cassandra",
@@ -234,15 +236,26 @@ def _detect_db_type(tech_stack: list[str] | None) -> str:
     return "unknown"
 
 
-def _strip_code_fence(content: str, language: str) -> str:
-    """Remove outer code-fence markers so nested fences don't break markdown/regex."""
-    # Try to extract content between ```lang ... ```
-    patterns = [
+@functools.lru_cache(maxsize=32)
+def _fence_pattern(language: str) -> re.Pattern:
+    """Compile và cache pattern regex tích hợp sẵn cho ngôn ngữ chỉ định."""
+    return re.compile(
         rf"```(?:{re.escape(language)}|{re.escape(language.lower())})\s*\n(.*?)(?:\n```\s*$|\n```\s*\Z)",
-        r"```\w*\s*\n(.*?)(?:\n```\s*$|\n```\s*\Z)",
-    ]
-    for pat in patterns:
-        m = re.search(pat, content, re.DOTALL | re.IGNORECASE | re.MULTILINE)
+        re.DOTALL | re.IGNORECASE | re.MULTILINE,
+    )
+
+
+_FENCE_FALLBACK_RE = re.compile(
+    r"```\w*\s*\n(.*?)(?:\n```\s*$|\n```\s*\Z)",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _strip_code_fence(content: str, language: str) -> str:
+    """Loại bỏ code fence bên ngoài để các fence lồng nhau không phá vỡ regex/markdown."""
+    # Try to extract content between ```lang ... ``` (cached pattern per language).
+    for pat in (_fence_pattern(language), _FENCE_FALLBACK_RE):
+        m = pat.search(content)
         if m:
             return m.group(1).rstrip()
     # Fallback: strip leading/trailing fence lines
@@ -255,7 +268,7 @@ def _strip_code_fence(content: str, language: str) -> str:
 
 
 def _deloop(text: str, max_repeats: int = 8) -> str:
-    """Truncate infinitely-repeated identical lines to mitigate model loop bugs."""
+    """Cắt ngắn các dòng lặp vô hạn để giảm thiểu lỗi lặp vòng của model."""
     lines = text.split("\n")
     out: list[str] = []
     prev: str | None = None
@@ -276,7 +289,7 @@ def _deloop(text: str, max_repeats: int = 8) -> str:
 
 
 def _compute_extra_instruction(role: str, tech_stack: list[str] | None) -> str:
-    """Role-specific instructions for artifact generation."""
+    """Sinh câu lệnh bổ sung riêng theo role để hướng dẫn việc tạo artifact."""
     if not tech_stack:
         if role == "tech_lead":
             return (
@@ -368,8 +381,10 @@ def _compute_extra_instruction(role: str, tech_stack: list[str] | None) -> str:
 
     if role == "devsecops":
         return (
-            "Write real Dockerfile, docker-compose.yml, or CI/CD YAML with working config. "
-            "No license headers."
+            "Write real Kubernetes manifests (Deployment, Service, Ingress, ConfigMap, Secret), "
+            "Dockerfile, and CI/CD pipeline YAML with working config. "
+            "All sensitive env vars must go in K8s Secret objects referenced via secretKeyRef — "
+            "never in plain env: blocks. No license headers."
         )
     if role == "tech_lead":
         return (
@@ -430,7 +445,7 @@ def _generate_one_file(
     extra_instruction: str = "",
     context_snippet: str = "",
 ) -> str:
-    """Tạo nội dung một file bằng coding model, strip code fences, remove loops."""
+    """Tạo nội dung một file bằng coding model, cắt fence bên ngoài và loại vòng lặp."""
     llm = ChatOllama(
         model=agent.model,
         base_url=ollama_base_url,
@@ -535,11 +550,9 @@ def _call_agent(
     # Compute once — reused in both the primary call and the retry branch.
     is_reasoning = any(m in agent.model.lower() for m in _REASONING_MODELS)
 
-    messages = [
-        SystemMessage(content=COMMON_AGENT_RULES + "\n\n---\n\n" + agent.system_prompt),
-        HumanMessage(content=context),
-    ]
-    response = llm.invoke(messages)
+    # Build system message once — reused in primary call and retry to avoid duplication.
+    sys_msg  = SystemMessage(content=COMMON_AGENT_RULES + "\n\n---\n\n" + agent.system_prompt)
+    response = llm.invoke([sys_msg, HumanMessage(content=context)])
     result   = str(response.content)
 
     # Strip chain-of-thought blocks from reasoning models.
@@ -552,15 +565,114 @@ def _call_agent(
             agent.name, agent.model, len(result.strip()),
         )
         trimmed = context[-1500:] if len(context) > 1500 else context
-        response = llm.invoke([
-            SystemMessage(content=COMMON_AGENT_RULES + "\n\n---\n\n" + agent.system_prompt),
-            HumanMessage(content=trimmed),
-        ])
+        response = llm.invoke([sys_msg, HumanMessage(content=trimmed)])
         result = str(response.content)
         if is_reasoning:
             result = _strip_thinking(result)
 
     return result
+
+
+# ── Context builder — shared by _build_node and run_single_step ──────────────────
+
+
+def _build_context_parts(
+    role: str,
+    agent: AgentConfig,
+    user_input: str,
+    step_outputs: dict[str, str],
+    tech_stack: list[str] | None,
+    dep_max_chars: int,
+    rag_enabled: bool = False,
+    rag_api_url: str = "",
+    project: str | None = None,
+    rag_top_k: int = RAG_TOP_K,
+    extra_context: str | None = None,
+) -> list[str]:
+    """
+    Lắp ráp danh sách context-parts cho bất kỳ lần gọi agent nào.
+    Tập trung toàn bộ logic dùng chung giữa _build_node và run_single_step, đảm bảo
+    cả hai đường code đều chèn định danh context giống nhau — bao gồm gợi ý ngày
+    hiện tại cho các role lập kế hoạch và gợi ý kiểu DB cho DBA/DA.
+    """
+    parts: list[str] = [
+        f"## Mục tiêu kinh doanh / Yêu cầu đầu vào\n{user_input}"
+    ]
+
+    # Current date — planning roles need this to avoid past-dated timelines.
+    if role in {"pm", "ba", "sa", "ta"}:
+        now = datetime.now()
+        parts.append(
+            f"\n## Ngày hiện tại\n"
+            f"{now.strftime('%d/%m/%Y')} (tháng {now.month} năm {now.year}). "
+            f"Mọi timeline, sprint, milestone PHẢI bắt đầu từ ngày này trở về sau. "
+            f"Không dùng bất kỳ ngày nào trong quá khứ."
+        )
+
+    if tech_stack:
+        stack_lines = "\n".join(f"- {item}" for item in tech_stack)
+        parts.append(
+            f"\n## Công nghệ bắt buộc\n"
+            f"Các công nghệ sau BẮT BUỘC phải sử dụng. Không đề xuất lựa chọn khác "
+            f"trừ khi được yêu cầu rõ ràng.\n{stack_lines}"
+        )
+
+    for dep in agent.depends_on:
+        if dep in step_outputs:
+            dep_name = AGENTS[dep].name
+            parts.append(
+                f"\n## Kết quả {dep_name}\n{_truncate(step_outputs[dep], dep_max_chars)}"
+            )
+
+    if extra_context:
+        parts.append(f"\n## Context bổ sung\n{extra_context}")
+
+    if rag_enabled and rag_api_url:
+        _hint = agent.rag_query_hint or agent.name
+        rag_text = _query_rag(rag_api_url, f"{_hint}: {user_input}", project, rag_top_k)
+        if rag_text:
+            parts.append(f"\n## Context từ Knowledge Base\n{_truncate(rag_text)}")
+
+    # DB-type hints steer DBA/DA to the correct schema dialect.
+    if role in {"dba", "da"} and tech_stack:
+        db_type = _detect_db_type(tech_stack)
+        if role == "dba":
+            if db_type == "nosql":
+                parts.append(
+                    "\n## DB Schema: NoSQL Only\n"
+                    "Tech stack chỉ dùng NoSQL (MongoDB). Tạo Mongoose schema files (.ts). "
+                    "KHÔNG tạo SQL DDL hay CREATE TABLE. "
+                    "Dùng embedded documents và arrays thay cho JOINs/FK."
+                )
+            elif db_type == "sql":
+                parts.append(
+                    "\n## DB Schema: SQL Relational\n"
+                    "Tech stack dùng relational DB. Tạo SQL DDL với CREATE TABLE, "
+                    "FOREIGN KEY relationships, và CREATE INDEX."
+                )
+            elif db_type == "both":
+                parts.append(
+                    "\n## DB Schema: Mixed (SQL + NoSQL)\n"
+                    "Tech stack dùng cả SQL và NoSQL. Tạo SQL DDL schema VÀ "
+                    "Mongoose models riêng cho từng data store."
+                )
+        elif role == "da":
+            if db_type == "nosql":
+                parts.append(
+                    "\n## Data Analysis: NoSQL Only\n"
+                    "Tech stack chỉ dùng MongoDB NoSQL. Sử dụng aggregation pipeline "
+                    "($match, $group, $project, $lookup). "
+                    "Nếu cần cross-collection analysis: BE export CSV trước, DA đọc CSV bằng Python/pandas. "
+                    "KHÔNG dùng SQL SELECT/FROM/WHERE."
+                )
+            elif db_type == "sql":
+                parts.append(
+                    "\n## Data Analysis: SQL\n"
+                    "Tech stack dùng relational DB. Phân tích bằng SQL queries với "
+                    "GROUP BY, window functions, aggregates, CTEs."
+                )
+
+    return parts
 
 
 # ── Factory tạo node ───────────────────────────────────────────────────────────────
@@ -586,89 +698,18 @@ def _build_node(role: str):
         dep_max_chars = _PER_DEP_CHARS.get(role, MAX_PREV_OUTPUT_CHARS)
 
         # 1. Tổng hợp context
-        context_parts: list[str] = [
-            f"## Mục tiêu kinh doanh / Yêu cầu đầu vào\n{state['user_input']}"
-        ]
-
-        # Ngày hiện tại — quan trọng cho PM/BA để tạo timeline không bị lùi về quá khứ
-        if role in {"pm", "ba", "sa", "ta"}:
-            now = datetime.now()
-            context_parts.append(
-                f"\n## Ngày hiện tại\n"
-                f"{now.strftime('%d/%m/%Y')} (tháng {now.month} năm {now.year}). "
-                f"Mọi timeline, sprint, milestone PHẢI bắt đầu từ ngày này trở về sau. "
-                f"Không dùng bất kỳ ngày nào trong quá khứ."
-            )
-
-        # Chèn tech stack ngay sau user input nếu có
-        if tech_stack:
-            stack_lines = "\n".join(f"- {item}" for item in tech_stack)
-            context_parts.append(
-                f"\n## Công nghệ bắt buộc\n"
-                f"Các công nghệ sau BẮT BUỘC phải sử dụng. Không đề xuất lựa chọn khác "
-                f"trừ khi được yêu cầu rõ ràng.\n{stack_lines}"
-            )
-
-        for dep in agent.depends_on:
-            if dep in step_outputs:
-                dep_name = AGENTS[dep].name
-                context_parts.append(
-                    f"\n## Kết quả {dep_name}\n{_truncate(step_outputs[dep], dep_max_chars)}"
-                )
-
-        # 2. Bổ sung RAG (tùy chọn)
-        if state.get("rag_enabled") and state.get("rag_api_url"):
-            _hint = agent.rag_query_hint or agent.name
-            rag_question = f"{_hint}: {state['user_input']}"
-            rag_text = _query_rag(
-                state["rag_api_url"],
-                rag_question,
-                state.get("project"),
-                state.get("rag_top_k", RAG_TOP_K),
-            )
-            if rag_text:
-                context_parts.append(
-                    f"\n## Context từ Knowledge Base\n{_truncate(rag_text)}"
-                )
-
-        # DB-type awareness cho DBA và DA roles
-        if role in {"dba", "da"} and tech_stack:
-            db_type = _detect_db_type(tech_stack)
-            if role == "dba":
-                if db_type == "nosql":
-                    context_parts.append(
-                        "\n## DB Schema: NoSQL Only\n"
-                        "Tech stack chỉ dùng NoSQL (MongoDB). Tạo Mongoose schema files (.ts). "
-                        "KHÔNG tạo SQL DDL hay CREATE TABLE. "
-                        "Dùng embedded documents và arrays thay cho JOINs/FK."
-                    )
-                elif db_type == "sql":
-                    context_parts.append(
-                        "\n## DB Schema: SQL Relational\n"
-                        "Tech stack dùng relational DB. Tạo SQL DDL với CREATE TABLE, "
-                        "FOREIGN KEY relationships, và CREATE INDEX."
-                    )
-                elif db_type == "both":
-                    context_parts.append(
-                        "\n## DB Schema: Mixed (SQL + NoSQL)\n"
-                        "Tech stack dùng cả SQL và NoSQL. Tạo SQL DDL schema VÀ "
-                        "Mongoose models riêng cho từng data store."
-                    )
-            elif role == "da":
-                if db_type == "nosql":
-                    context_parts.append(
-                        "\n## Data Analysis: NoSQL Only\n"
-                        "Tech stack chỉ dùng MongoDB NoSQL. Sử dụng aggregation pipeline "
-                        "($match, $group, $project, $lookup). "
-                        "Nếu cần cross-collection analysis: BE export CSV trước, DA đọc CSV bằng Python/pandas. "
-                        "KHÔNG dùng SQL SELECT/FROM/WHERE."
-                    )
-                elif db_type == "sql":
-                    context_parts.append(
-                        "\n## Data Analysis: SQL\n"
-                        "Tech stack dùng relational DB. Phân tích bằng SQL queries với "
-                        "GROUP BY, window functions, aggregates, CTEs."
-                    )
+        context_parts = _build_context_parts(
+            role=role,
+            agent=agent,
+            user_input=state["user_input"],
+            step_outputs=step_outputs,
+            tech_stack=tech_stack,
+            dep_max_chars=dep_max_chars,
+            rag_enabled=state.get("rag_enabled", False),
+            rag_api_url=state.get("rag_api_url", ""),
+            project=state.get("project"),
+            rag_top_k=state.get("rag_top_k", RAG_TOP_K),
+        )
 
         # Tính extra_instruction cho _generate_artifacts_multi_turn
         extra_instruction = _compute_extra_instruction(role, tech_stack)
@@ -779,37 +820,21 @@ def run_single_step(
     agent = AGENTS[role]
     step_outputs: dict[str, str] = prev_outputs or {}
 
-    context_parts: list[str] = [f"## Mục tiêu kinh doanh / Yêu cầu đầu vào\n{user_input}"]
-
-    if tech_stack:
-        stack_lines = "\n".join(f"- {item}" for item in tech_stack)
-        context_parts.append(
-            f"\n## Công nghệ bắt buộc\n"
-            f"Các công nghệ sau BẮT BUỘC phải sử dụng. Không đề xuất lựa chọn khác "
-            f"trừ khi được yêu cầu rõ ràng.\n{stack_lines}"
-        )
-
     # Apply same per-dep char limits as the workflow node to avoid context overflow.
     dep_max_chars = _PER_DEP_CHARS.get(role, MAX_PREV_OUTPUT_CHARS)
-    for dep in agent.depends_on:
-        if dep in step_outputs:
-            dep_name = AGENTS[dep].name
-            context_parts.append(
-                f"\n## Kết quả {dep_name}\n{_truncate(step_outputs[dep], dep_max_chars)}"
-            )
-
-    if extra_context:
-        context_parts.append(f"\n## Context bổ sung\n{extra_context}")
-
-    if rag_enabled and rag_api_url:
-        _hint = agent.rag_query_hint or agent.name
-        rag_question = f"{_hint}: {user_input}"
-        rag_text = _query_rag(rag_api_url, rag_question, project, rag_top_k)
-        if rag_text:
-            context_parts.append(
-                f"\n## Context từ Knowledge Base\n{_truncate(rag_text)}"
-            )
-
+    context_parts = _build_context_parts(
+        role=role,
+        agent=agent,
+        user_input=user_input,
+        step_outputs=step_outputs,
+        tech_stack=tech_stack,
+        dep_max_chars=dep_max_chars,
+        rag_enabled=rag_enabled,
+        rag_api_url=rag_api_url,
+        project=project,
+        rag_top_k=rag_top_k,
+        extra_context=extra_context,
+    )
     context = "\n".join(context_parts)
     if role in _ARTIFACT_ROLES:
         extra_instruction = _compute_extra_instruction(role, tech_stack)

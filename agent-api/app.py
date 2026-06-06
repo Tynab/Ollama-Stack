@@ -3,15 +3,19 @@ app.py — YAN SDLC Agent Orchestrator API  (cổng 8091)
 
 Endpoints
 ---------
-GET  /health                 Thông tin service: Ollama URL, RAG URL, số agent.
-GET  /agents                 Liệt kê cấu hình tất cả agent (step, model, depends_on).
-POST /agent/{role}           Gọi đồng bộ một bước agent đơn lẻ.
-                             Body: AgentStepRequest  →  AgentStepResponse
-POST /workflow/run           Gửi workflow SDLC 15 agents để chạy nền.
-                             Body: WorkflowRunRequest  →  {workflow_id, status}
-GET  /workflow/{workflow_id} Kiểm tra trạng thái hoặc lấy kết quả đã hoàn thành.
-                             Response: WorkflowRecord
-GET  /workflows              Liệt kê workflow gần đây (mới nhất trước).
+GET  /health                                       Thông tin service: Ollama URL, RAG URL, số agent.
+GET  /agents                                       Liệt kê cấu hình tất cả agent (step, model, depends_on).
+GET  /ui                                           Giao diện Workflow UI (single-page app).
+POST /agent/{role}                                 Gọi đồng bộ một bước agent đơn lẻ.
+                                                   Body: AgentStepRequest  →  AgentStepResponse
+POST /workflow/run                                 Gửi workflow SDLC 15 agents để chạy nền.
+                                                   Body: WorkflowRunRequest  →  {workflow_id, status}
+GET  /workflow/{workflow_id}                       Kiểm tra trạng thái hoặc lấy kết quả đã hoàn thành.
+                                                   Response: WorkflowRecord
+GET  /workflows                                    Liệt kê workflow gần đây (mới nhất trước, tối đa 50).
+GET  /workflow/{workflow_id}/artifacts             Liệt kê các artifact file đã lưu (metadata, không bao gồm nội dung).
+GET  /workflow/{workflow_id}/artifacts/{role}/{path}  Đọc nội dung một file artifact;
+                                                      thêm ?download=1 để tải xuống dưới dạng binary.
 
 Vòng đời workflow
 -----------------
@@ -27,6 +31,7 @@ Ghi chú Concurrency
 - FastAPI BackgroundTasks chạy workflow trong thread-pool thread;
   _run_workflow_task cập nhật WorkflowRecord trực tiếp (không cần re-insert
   vì dict là kiểu tham chiếu).
+- Artifact extraction chạy ngay sau mỗi node hoàn thành (non-fatal: lỗi không dừng workflow).
 """
 
 import json

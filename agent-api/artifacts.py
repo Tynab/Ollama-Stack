@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 import re
 from pathlib import Path
 
@@ -77,8 +78,13 @@ _PRE_FNAME_RE = re.compile(
 
 
 def _sanitize_relpath(raw: str) -> str:
-    """Loại bỏ path-traversal và ký tự không hợp lệ."""
-    p = raw.replace("..", "").lstrip("/").strip()
+    """Làm sạch đường dẫn do model sinh ra: chuẩn hoá dấu phân cách, loại bỏ chuỗi traversal."""
+    # Normalise Windows backslashes then collapse /../ via posixpath.normpath.
+    normalized = posixpath.normpath(raw.replace("\\", "/"))
+    # Remove any remaining leading slashes or .. components after normpath.
+    parts = [p for p in normalized.split("/") if p and p != ".."]
+    p = "/".join(parts)
+    # Allow only safe characters (word chars, dot, dash, slash).
     p = re.sub(r"[^\w.\-/]", "_", p)
     return p or "file.txt"
 
@@ -117,11 +123,12 @@ def extract_and_save(role: str, output: str, workflow_id: str) -> list[dict]:
 def _do_extract(role: str, output: str, workflow_id: str) -> list[dict]:
     base = Path(ARTIFACT_BASE) / workflow_id / role
     base.mkdir(parents=True, exist_ok=True)
+    base_resolved = base.resolve()  # compute once; passed to every _save call
 
     artifacts: list[dict] = []
     seen: set[str] = set()
 
-    # ── Pass 1: explicit ### FILE: headers ──────────────────────────
+    # ── Pass 1: explicit ### FILE: headers ──────────────────────────────────
     structured_spans: list[tuple[int, int]] = []
     for m in _FILE_HDR_RE.finditer(output):
         raw_path = m.group(1)
@@ -130,7 +137,7 @@ def _do_extract(role: str, output: str, workflow_id: str) -> list[dict]:
         if not content.strip():
             continue
         rel = _sanitize_relpath(raw_path)
-        _save(base, role, rel, content, lang, artifacts, seen)
+        _save(base, base_resolved, role, rel, content, lang, artifacts, seen)
         structured_spans.append((m.start(), m.end()))
 
     def _in_structured(start: int) -> bool:
@@ -168,7 +175,7 @@ def _do_extract(role: str, output: str, workflow_id: str) -> list[dict]:
             filename = _default_name(lang, counter[0])
 
         rel = _sanitize_relpath(filename)
-        _save(base, role, rel, save_content, lang, artifacts, seen)
+        _save(base, base_resolved, role, rel, save_content, lang, artifacts, seen)
 
     # ── Luôn lưu toàn bộ output raw dưới dạng _output.md ───────────
     md_path = base / "_output.md"
@@ -188,6 +195,7 @@ def _do_extract(role: str, output: str, workflow_id: str) -> list[dict]:
 
 def _save(
     base: Path,
+    base_resolved: Path,
     role: str,
     rel: str,
     content: str,
@@ -202,7 +210,7 @@ def _save(
     # Defense-in-depth: confirm the resolved path stays within base (guards against
     # any edge case that bypasses _sanitize_relpath).
     try:
-        dest.resolve().relative_to(base.resolve())
+        dest.resolve().relative_to(base_resolved)
     except ValueError:
         logger.warning("Path confinement blocked write outside base: %s", dest)
         return
