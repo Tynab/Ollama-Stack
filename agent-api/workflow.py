@@ -421,11 +421,12 @@ def _find_uncovered_tasks(tl_tasks: list[dict], file_infos: list[dict]) -> list[
 
 
 def _build_task_checklist(tl_tasks: list[dict], file_infos: list[dict]) -> str:
-    """Xây dựng bảng Markdown Task Completion Checklist để thêm vào cuối output engineer.
+    """Xây dựng bảng Markdown Task Completion Checklist để thêm vào output engineer.
 
-    Mỗi dòng đối chiếu một TL task với kết quả sinh code:
+    Mỗi dòng đối chiếu một TL task với kết quả sinh code (3 trạng thái):
     - ✅ Done: task được cover bởi ít nhất một file đã sinh.
-    - ⏳ Addressed in output: task chưa có file khớp nhưng đã được đề cập.
+    - ⏳ Partial: task chưa có file khớp nhưng đã được đề cập trong output.
+    - ❌ Deferred: task bị defer hoặc chưa được xử lý.
 
     Trả về chuỗi rỗng nếu tl_tasks trống (không có TL task board).
     """
@@ -456,7 +457,7 @@ def _build_task_checklist(tl_tasks: list[dict], file_infos: list[dict]) -> str:
             status      = "✅ Done"
             files_label = ", ".join(f"`{fn}`" for fn in matched_files[:2])
         else:
-            status      = "⏳ Addressed in output"
+            status      = "⏳ Partial"
             files_label = "—"
         task_display = (task_text[:60] + "…") if len(task_text) > 60 else task_text
         lines.append(f"| {tid} | {task_display} | {priority} | {status} | {files_label} |")
@@ -499,7 +500,6 @@ def _parse_clarifier_regen_list(clarifier_output: str) -> list[str]:
         section_text = section_text[:30 + stop.start()]
 
     seen: set[str] = set()
-    roles_ordered: list[str] = []
 
     for line in section_text.split("\n"):
         if "|" not in line:
@@ -948,7 +948,7 @@ def _generate_artifacts_multi_turn(
                 all_files.append(file_info)
 
     # Thêm bảng Task Completion Checklist vào cuối output để đối chiếu
-    # mọi TL task với file đã sinh — ✅ Done hoặc ⏳ Addressed in output.
+    # mọi TL task với file đã sinh — ✅ Done, ⏳ Partial, hoặc ❌ Deferred.
     if tl_tasks:
         parts.append(_build_task_checklist(tl_tasks, all_files))
 

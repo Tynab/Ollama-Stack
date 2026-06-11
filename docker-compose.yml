@@ -1,3 +1,5 @@
+name: rag-agent
+
 services:
   ollama:
     image: ollama/ollama:latest
@@ -72,7 +74,7 @@ services:
   rag-api:
     build:
       context: ./rag-api
-    image: ollama-stack_rag-api:latest
+    image: rag-agent_rag-api:latest
     container_name: rag-api
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
@@ -118,7 +120,7 @@ services:
   agent-api:
     build:
       context: ./agent-api
-    image: ollama-stack_agent-api:latest
+    image: rag-agent_agent-api:latest
     container_name: agent-api
     labels:
       - "com.centurylinklabs.watchtower.enable=false"

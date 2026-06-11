@@ -1,5 +1,5 @@
 ﻿"""
-graph.py — Lớp tích hợp Neo4j GraphRAG cho YAN RAG stack
+graph.py — Lớp tích hợp Neo4j GraphRAG cho RAG - Agent
 ==========================================================
 
 Mô tả
@@ -61,6 +61,10 @@ logger = logging.getLogger("rag-graph")
 
 
 def _require_env(name: str) -> str:
+    """Trả về giá trị biến môi trường *name*.
+
+    Raise RuntimeError nếu biến không tồn tại — dùng cho các biến cấu hình bắt buộc.
+    """
     value = os.environ.get(name)
     if value is None:
         raise RuntimeError(
