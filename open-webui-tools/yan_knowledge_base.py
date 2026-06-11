@@ -1,6 +1,6 @@
 """
-title: YAN Knowledge Base
-author: YAN
+title: rag-agent-platform - Kho tri thức
+author: rag-agent-platform
 description: >
     Tool hỏi đáp tài liệu nội bộ qua RAG API. Cho phép chạt trực tiếp
     với các PRD, spec, kiến trúc, schema đã được ingest vào Qdrant.
@@ -11,7 +11,7 @@ version: 1.1.0
 
 Mô tả chi tiết
 --------------
-Tool này là giao tiếp trực tiếp giữa Open WebUI và YAN RAG API (cổng 8090).
+Tool này là giao tiếp trực tiếp giữa Open WebUI và RAG API của rag-agent-platform (cổng 8090).
 Khi được gọi, tool gửi câu hỏi của người dùng tới endpoint POST /ask của
 rag-api, nhận kết quả RAG hybrid (Qdrant vector search + Neo4j graph enrichment
 + Ollama LLM), và trả về câu trả lời kèm danh sách file nguồn.

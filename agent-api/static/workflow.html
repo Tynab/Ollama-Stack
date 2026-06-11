@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>YAN SDLC Agent · Workflow UI</title>
+  <title>rag-agent-platform · Workflow UI</title>
   <script src="https://cdn.jsdelivr.net/npm/marked@11/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css">
@@ -57,8 +57,11 @@
     .logo {
       font-size: 15px;
       font-weight: 800;
-      letter-spacing: -0.02em;
+      letter-spacing: 0;
       white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 220px;
       color: var(--text);
     }
     .logo em { color: var(--accent-l); font-style: normal; }
@@ -68,6 +71,7 @@
       align-items: center;
       gap: 8px;
       flex: 1;
+      min-width: 0;
       max-width: 560px;
     }
 
@@ -574,7 +578,7 @@
 
 <!-- ── HEADER ────────────────────────────────────────────────────────── -->
 <header class="header">
-  <div class="logo">YAN <em>SDLC</em> Agent</div>
+  <div class="logo">rag-agent-platform <em>SDLC</em></div>
 
   <div class="search-row">
     <input id="wid-input" type="text" placeholder="Nhập Workflow ID…" spellcheck="false" />
@@ -594,7 +598,7 @@
   <!-- Empty state -->
   <div id="empty-state" class="center-state">
     <div class="icon">🤖</div>
-    <h2>YAN SDLC Agent Workflow</h2>
+    <h2>Workflow SDLC của rag-agent-platform</h2>
     <p>Nhập Workflow ID để theo dõi tiến trình 15 bước, hoặc nhấn <strong>Recent</strong> để xem các lần chạy gần đây.</p>
   </div>
 
