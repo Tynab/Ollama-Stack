@@ -1,6 +1,6 @@
 ﻿"""
-app.py — YAN Local RAG API (cổng 8090)
-=======================================
+app.py — API RAG cục bộ của rag-agent-platform (cổng 8090)
+===========================================================
 
 Mô tả
 -----
@@ -130,7 +130,7 @@ RAG_TOP_K = int(_require_env("RAG_TOP_K"))
 # RAG_TIMEOUT của agent-api có thể gây kết quả rỗng bất ngờ.
 OLLAMA_REQUEST_TIMEOUT: float = float(os.environ.get("OLLAMA_REQUEST_TIMEOUT", "600"))
 
-app = FastAPI(title="YAN Local RAG API", version="1.0.0")
+app = FastAPI(title="rag-agent-platform - API RAG cục bộ", version="1.0.0")
 
 
 class AskRequest(BaseModel):

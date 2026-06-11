@@ -1,4 +1,4 @@
-name: rag-agent
+name: rag-agent-platform
 
 services:
   ollama:
@@ -74,7 +74,7 @@ services:
   rag-api:
     build:
       context: ./rag-api
-    image: rag-agent_rag-api:latest
+    image: rag-agent-platform_rag-api:latest
     container_name: rag-api
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
@@ -120,7 +120,7 @@ services:
   agent-api:
     build:
       context: ./agent-api
-    image: rag-agent_agent-api:latest
+    image: rag-agent-platform_agent-api:latest
     container_name: agent-api
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
@@ -196,7 +196,7 @@ services:
       RAG_OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
       RAG_EMBEDDING_MODEL: ${EMBEDDING_MODEL}
       RAG_TOP_K: ${RAG_TOP_K}
-      USER_AGENT: "YAN-AI/1.0"
+      USER_AGENT: "rag-agent-platform/1.0"
       CORS_ALLOW_ORIGIN: "http://18.191.161.84:8085,http://localhost:8085,http://127.0.0.1:8085"
     networks:
       - yan

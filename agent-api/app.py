@@ -1,6 +1,6 @@
 """
-app.py — YAN SDLC Agent Orchestrator API (cổng 8091)
-=====================================================
+app.py — API điều phối SDLC Agent của rag-agent-platform (cổng 8091)
+====================================================================
 
 Mô tả
 -----
@@ -137,7 +137,7 @@ logging.basicConfig(
 
 logger = logging.getLogger("agent-api")
 
-app = FastAPI(title="YAN SDLC Agent Orchestrator", version="1.0.0")
+app = FastAPI(title="rag-agent-platform - Bộ điều phối SDLC Agent", version="1.0.0")
 
 _STATIC_DIR = Path(__file__).parent / "static"
 

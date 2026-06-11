@@ -1,6 +1,6 @@
 """
-title: YAN SDLC Agent Workflow
-author: YAN
+title: rag-agent-platform - SDLC Agent Workflow
+author: rag-agent-platform
 description: >
     Tool khởi chạy SDLC Agent Workflow 15 bước toàn diện:
     BA → PM → SA → TA → Designer → Team Lead → FE → Mobile → DBA
@@ -14,7 +14,7 @@ version: 2.0.0
 
 Mô tả chi tiết
 --------------
-Tool là giao tiếp trực tiếp giữa Open WebUI và YAN Agent API (cổng 8091).
+Tool là giao tiếp trực tiếp giữa Open WebUI và Agent API của rag-agent-platform (cổng 8091).
 Cho phép người dùng khởi động và theo dõi toàn bộ SDLC pipeline AI
 trực tiếp từ giao diện chat mà không cần gọi API thủ công.
 

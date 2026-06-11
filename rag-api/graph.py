@@ -1,5 +1,5 @@
 ﻿"""
-graph.py — Lớp tích hợp Neo4j GraphRAG cho RAG - Agent
+graph.py — Lớp tích hợp Neo4j GraphRAG cho rag-agent-platform
 ==========================================================
 
 Mô tả
