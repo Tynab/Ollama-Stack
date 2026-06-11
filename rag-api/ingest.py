@@ -1,5 +1,5 @@
 """
-ingest.py — Pipeline nạp tài liệu vào Qdrant và Neo4j cho YAN RAG stack
+ingest.py — Pipeline nạp tài liệu vào Qdrant và Neo4j cho RAG - Agent
 =========================================================================
 
 Mô tả

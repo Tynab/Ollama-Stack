@@ -302,7 +302,7 @@ Structure your output with these sections:
         name="Designer Agent — UI/UX Design",
         model=MODEL_DESIGNER,
         depends_on=["ba", "sa", "ta"],
-        rag_query_hint="UI flow, screen design, wireframe, user journey, component behavior, design system, form behavior, empty state, error state, color palette, typography, spacing, layout grid",
+        rag_query_hint="UI flow, screen design, wireframe, user journey, component behavior, design system, form behavior, empty state, error state, color palette, typography, spacing, layout grid, platform split web app mobile app, native mobile wireframe, iOS HIG, Material Design, safe area, bottom navigation bar, responsive breakpoints",
         system_prompt="""\
 You are the Lead UI/UX Designer Agent.
 Your output is the SINGLE SOURCE OF TRUTH for all frontend and mobile visual implementation.

@@ -1,6 +1,6 @@
-# YAN Ollama Stack
+# RAG - Agent
 
-Nền tảng AI cục bộ vận hành hoàn toàn **offline** — không cần cloud, không cần API key bên ngoài. Toàn bộ pipeline từ LLM inference, vector search, graph enrichment, RAG, đến SDLC automation chạy trong một cụm Docker Compose trên máy local hoặc private server.
+RAG - Agent là nền tảng AI cục bộ vận hành hoàn toàn **offline** — không cần cloud, không cần API key bên ngoài. Toàn bộ pipeline từ LLM inference, vector search, graph enrichment, RAG, đến SDLC automation chạy trong một cụm Docker Compose trên máy local hoặc private server.
 
 **Thành phần cốt lõi:** Ollama · Qdrant · Neo4j · RAG API · Agent API · Open WebUI · Watchtower · Deunhealth
 
@@ -8,7 +8,7 @@ Nền tảng AI cục bộ vận hành hoàn toàn **offline** — không cần 
 
 ## Mục lục
 
-1. [Tổng quan stack](#1-tổng-quan-stack)
+1. [Tổng quan RAG - Agent](#1-tổng-quan-rag---agent)
 2. [Kiến trúc hệ thống](#2-kiến-trúc-hệ-thống)
 3. [SDLC Workflow — 15 bước](#3-sdlc-workflow--15-bước)
 4. [Yêu cầu hệ thống](#4-yêu-cầu-hệ-thống)
@@ -29,7 +29,7 @@ Nền tảng AI cục bộ vận hành hoàn toàn **offline** — không cần 
 
 ---
 
-## 1. Tổng quan stack
+## 1. Tổng quan RAG - Agent
 
 | Service | Image | Port (host) | Mục đích |
 |---|---|---|---|
@@ -211,9 +211,9 @@ Tắt tính năng: `CLARIFIER_REGEN_LOOPS=0` trong `.env`.
 ## 5. Cấu trúc thư mục
 
 ```
-Ollama-Stack/
+RAG - Agent/
 ├── .env                              # Nguồn cấu hình duy nhất (single source of truth)
-├── docker-compose.yml                # Định nghĩa toàn bộ stack
+├── docker-compose.yml                # Định nghĩa toàn bộ dịch vụ RAG - Agent
 │
 ├── data/
 │   ├── raw/                          # Tài liệu nguồn cho RAG
@@ -340,7 +340,7 @@ MAX_FILES_PER_ROLE=6
 CLARIFIER_REGEN_LOOPS=1
 ```
 
-### Bước 2 — Khởi động stack
+### Bước 2 — Khởi động RAG - Agent
 
 ```bash
 docker compose up -d
@@ -1387,7 +1387,7 @@ CLARIFIER_REGEN_LOOPS=0
 ### Khởi động & dừng
 
 ```bash
-# Khởi động toàn bộ stack
+# Khởi động toàn bộ RAG - Agent
 docker compose up -d
 
 # Dừng tất cả (giữ volumes)
